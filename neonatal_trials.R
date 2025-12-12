@@ -138,11 +138,36 @@ fetch_trials <- function(term = DEFAULT_TERM,
       paged_params$pageToken <- page_token
     }
 
-    resp <- httr::GET(API_BASE_URL, query = paged_params, httr::timeout(30))
+    resp <- httr::GET(
+      API_BASE_URL,
+      query = paged_params,
+      httr::timeout(30),
+      httr::add_headers(Accept = "application/json")
+    )
     httr::stop_for_status(resp)
 
+    content_type <- httr::http_type(resp)
     payload <- httr::content(resp, as = "text", encoding = "UTF-8")
-    parsed <- jsonlite::fromJSON(payload, simplifyVector = FALSE)
+    if (content_type != "application/json") {
+      preview <- substr(payload, 1, 200)
+      stop(sprintf(
+        "ClinicalTrials.gov API returned non-JSON content (type: %s, status: %s). Response preview: %s",
+        content_type,
+        httr::status_code(resp),
+        preview
+      ))
+    }
+
+    parsed <- tryCatch(
+      jsonlite::fromJSON(payload, simplifyVector = FALSE),
+      error = function(e) {
+        stop(sprintf(
+          "Unable to parse ClinicalTrials.gov response as JSON (status: %s). First 200 characters: %s",
+          httr::status_code(resp),
+          substr(payload, 1, 200)
+        ))
+      }
+    )
 
     studies <- parsed$studies %||% parsed$results %||% list()
     records <- c(records, lapply(studies, extract_trial_record,
