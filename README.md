@@ -119,6 +119,24 @@ in the API response:
 
 The tool will fall back to alternate fields if these are missing.
 
+If you encounter an HTML response instead of JSON (common behind some
+proxies), both the Python and R clients will automatically retry against
+an alternate base URL (`https://clinicaltrials.gov/data-api/v2/studies`).
+You can supply your own base URLs to override this behavior:
+
+```bash
+python neonatal_trials.py --base-url https://your-proxy.example/api/studies
+```
+
+For R, pass a comma-delimited list if needed:
+
+```r
+summarize_neonatal_trials(base_urls = c(
+  "https://clinicaltrials.gov/data-api/api/studies",
+  "https://clinicaltrials.gov/data-api/v2/studies"
+))
+```
+
 ## Development
 
 To run the unit tests that validate aggregation logic:

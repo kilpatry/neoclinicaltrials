@@ -12,12 +12,16 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence
 
 if TYPE_CHECKING:
     import requests
 
-API_BASE_URL = "https://clinicaltrials.gov/data-api/api/studies"
+API_BASE_URLS = [
+    "https://clinicaltrials.gov/data-api/api/studies",
+    # Alternate path that has returned JSON more consistently in some environments
+    "https://clinicaltrials.gov/data-api/v2/studies",
+]
 DEFAULT_TERM = "neonatal"
 DEFAULT_SPONSOR_FIELD = "sponsorInfo.leadSponsorClass"
 DEFAULT_STATUS_FIELD = "protocolSection.statusModule.overallStatus"
@@ -46,8 +50,14 @@ class TrialRecord:
 class ClinicalTrialsClient:
     """Minimal client for the ClinicalTrials.gov Data API."""
 
-    def __init__(self, base_url: str = API_BASE_URL, session: Optional["requests.Session"] = None):
-        self.base_url = base_url.rstrip("/")
+    def __init__(
+        self,
+        base_url: str | Sequence[str] = API_BASE_URLS,
+        session: Optional["requests.Session"] = None,
+    ):
+        self.base_urls: List[str] = list(base_url) if isinstance(base_url, Sequence) else [base_url]
+        self.base_urls = [url.rstrip("/") for url in self.base_urls]
+        self._active_base: Optional[str] = None
         self.session = session
 
     def fetch_trials(
@@ -92,24 +102,11 @@ class ClinicalTrialsClient:
             if page_token:
                 paged_params["pageToken"] = page_token
 
-            response = http.get(
-                self.base_url,
-                params=paged_params,
-                timeout=30,
-                headers={
-                    "Accept": "application/json",
-                    "User-Agent": "neonatal-trials-py/1.0",
-                },
-            )
-            response.raise_for_status()
+            response, base_used = self._request_with_fallback(http, paged_params)
+            self._active_base = base_used
 
             content_type = response.headers.get("Content-Type", "")
             text_payload = response.text
-            if "json" not in content_type.lower():
-                preview = text_payload[:200]
-                raise ValueError(
-                    f"ClinicalTrials.gov API returned non-JSON content (type: {content_type}, status: {response.status_code}). Response preview: {preview}"
-                )
 
             try:
                 payload = response.json()
@@ -138,6 +135,47 @@ class ClinicalTrialsClient:
                 break
 
         return records
+
+    def _request_with_fallback(
+        self,
+        http: "requests.Session",
+        params: Dict[str, Any],
+    ) -> tuple["requests.Response", str]:
+        errors: List[str] = []
+        base_candidates = [self._active_base] if self._active_base else self.base_urls
+
+        for base in base_candidates:
+            if base is None:
+                continue
+            try:
+                response = http.get(
+                    base,
+                    params=params,
+                    timeout=30,
+                    headers={
+                        "Accept": "application/json",
+                        "User-Agent": "neonatal-trials-py/1.0",
+                    },
+                )
+                response.raise_for_status()
+                content_type = response.headers.get("Content-Type", "")
+                if "json" not in content_type.lower():
+                    preview = response.text[:200]
+                    raise ValueError(
+                        "ClinicalTrials.gov API returned non-JSON content "
+                        f"(type: {content_type}, status: {response.status_code}). "
+                        f"Response preview: {preview}"
+                    )
+                return response, base
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{base}: {exc}")
+
+        details = "; ".join(errors)
+        raise RuntimeError(
+            "Unable to retrieve JSON from ClinicalTrials.gov API after trying all base URLs. "
+            f"Checked: {details}. If you are behind a corporate proxy or network filter, try a VPN "
+            "or adjust the base URL with the --base-url flag."
+        )
 
     def _extract_trial_record(
         self,
@@ -338,12 +376,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE, help="Page size for API pagination")
     parser.add_argument("--max-pages", type=int, default=30, help="Maximum number of pages to fetch")
+    parser.add_argument(
+        "--base-url",
+        action="append",
+        help=(
+            "Override the ClinicalTrials.gov API base URL. Can be passed multiple times to define an ordered fallback list."
+        ),
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    client = ClinicalTrialsClient()
+    client = ClinicalTrialsClient(base_url=args.base_url or API_BASE_URLS)
     records = client.fetch_trials(
         term=args.term,
         sponsor_field=args.sponsor_field,

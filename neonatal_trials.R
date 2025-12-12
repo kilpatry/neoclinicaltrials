@@ -5,7 +5,11 @@
 # and call `summarize_neonatal_trials()` to retrieve a data frame of yearly
 # counts grouped by lead sponsor class.
 
-API_BASE_URL <- "https://clinicaltrials.gov/data-api/api/studies"
+API_BASE_URLS <- c(
+  "https://clinicaltrials.gov/data-api/api/studies",
+  # Alternate path that has returned JSON more consistently in some environments
+  "https://clinicaltrials.gov/data-api/v2/studies"
+)
 DEFAULT_TERM <- "neonatal"
 DEFAULT_SPONSOR_FIELD <- "sponsorInfo.leadSponsorClass"
 DEFAULT_STATUS_FIELD <- "protocolSection.statusModule.overallStatus"
@@ -117,6 +121,7 @@ fetch_trials <- function(term = DEFAULT_TERM,
                          intervention_field = DEFAULT_INTERVENTION_FIELD,
                          study_type_field = DEFAULT_STUDY_TYPE_FIELD,
                          date_fields = DEFAULT_DATE_FIELDS,
+                         base_urls = API_BASE_URLS,
                          page_size = DEFAULT_PAGE_SIZE,
                          max_pages = 30) {
   requireNamespace("httr", quietly = TRUE)
@@ -132,6 +137,8 @@ fetch_trials <- function(term = DEFAULT_TERM,
 
   records <- list()
   page_token <- NULL
+  base_candidates <- base_urls
+  active_base <- NULL
 
   for (i in seq_len(max_pages)) {
     paged_params <- params
@@ -139,37 +146,64 @@ fetch_trials <- function(term = DEFAULT_TERM,
       paged_params$pageToken <- page_token
     }
 
-    resp <- httr::GET(
-      API_BASE_URL,
-      query = paged_params,
-      httr::timeout(30),
-      httr::accept_json(),
-      httr::user_agent("neonatal-trials-r/1.0")
-    )
-    httr::stop_for_status(resp)
+    resp <- NULL
+    last_error <- NULL
 
-    content_type <- httr::http_type(resp)
-    payload <- httr::content(resp, as = "text", encoding = "UTF-8")
-    if (!grepl("json", content_type, ignore.case = TRUE)) {
-      preview <- substr(payload, 1, 200)
+    for (base in base_candidates) {
+      try({
+        resp <- httr::GET(
+          base,
+          query = paged_params,
+          httr::timeout(30),
+          httr::accept_json(),
+          httr::user_agent("neonatal-trials-r/1.0")
+        )
+        httr::stop_for_status(resp)
+
+        content_type <- httr::http_type(resp)
+        payload <- httr::content(resp, as = "text", encoding = "UTF-8")
+        if (!grepl("json", content_type, ignore.case = TRUE)) {
+          preview <- substr(payload, 1, 200)
+          stop(sprintf(
+            "ClinicalTrials.gov API returned non-JSON content (type: %s, status: %s). Response preview: %s",
+            content_type,
+            httr::status_code(resp),
+            preview
+          ))
+        }
+
+        parsed <- tryCatch(
+          jsonlite::fromJSON(payload, simplifyVector = FALSE),
+          error = function(e) {
+            stop(sprintf(
+              "Unable to parse ClinicalTrials.gov response as JSON (status: %s). First 200 characters: %s",
+              httr::status_code(resp),
+              substr(payload, 1, 200)
+            ))
+          }
+        )
+        active_base <- base
+        break
+      }, error = function(e) {
+        last_error <<- sprintf("%s: %s", base, conditionMessage(e))
+        resp <<- NULL
+      })
+    }
+
+    if (is.null(resp)) {
       stop(sprintf(
-        "ClinicalTrials.gov API returned non-JSON content (type: %s, status: %s). Response preview: %s",
-        content_type,
-        httr::status_code(resp),
-        preview
+        paste(
+          "Unable to retrieve JSON from ClinicalTrials.gov API after trying all base URLs.",
+          "Checked: %s. If you are behind a corporate proxy or network filter, try a VPN",
+          "or override the base URLs passed to fetch_trials()."
+        ),
+        paste(last_error, collapse = "; ")
       ))
     }
 
-    parsed <- tryCatch(
-      jsonlite::fromJSON(payload, simplifyVector = FALSE),
-      error = function(e) {
-        stop(sprintf(
-          "Unable to parse ClinicalTrials.gov response as JSON (status: %s). First 200 characters: %s",
-          httr::status_code(resp),
-          substr(payload, 1, 200)
-        ))
-      }
-    )
+    if (!is.null(active_base)) {
+      base_candidates <- c(active_base, setdiff(base_candidates, active_base))
+    }
 
     studies <- parsed$studies %||% parsed$results %||% list()
     records <- c(records, lapply(studies, extract_trial_record,
@@ -233,6 +267,7 @@ summarize_neonatal_trials <- function(term = DEFAULT_TERM,
                                       study_type_field = DEFAULT_STUDY_TYPE_FIELD,
                                       start_year = NULL,
                                       end_year = NULL,
+                                      base_urls = API_BASE_URLS,
                                       page_size = DEFAULT_PAGE_SIZE,
                                       max_pages = 30,
                                       output = c("data.frame", "csv"),
@@ -244,6 +279,7 @@ summarize_neonatal_trials <- function(term = DEFAULT_TERM,
                           condition_field = condition_field,
                           intervention_field = intervention_field,
                           study_type_field = study_type_field,
+                          base_urls = base_urls,
                           date_fields = DEFAULT_DATE_FIELDS,
                           page_size = page_size,
                           max_pages = max_pages)
@@ -266,6 +302,7 @@ if (identical(environmentName(environment()), "R_GlobalEnv") && !interactive()) 
   sponsor_field <- DEFAULT_SPONSOR_FIELD
   output <- "data.frame"
   outfile <- ""
+  base_urls <- API_BASE_URLS
 
   parse_arg <- function(flag) {
     idx <- which(args == flag)
@@ -274,6 +311,10 @@ if (identical(environmentName(environment()), "R_GlobalEnv") && !interactive()) 
 
   term <- parse_arg("--term") %||% term
   sponsor_field <- parse_arg("--sponsor-field") %||% sponsor_field
+  base_urls_arg <- parse_arg("--base-url")
+  if (!is.null(base_urls_arg)) {
+    base_urls <- strsplit(base_urls_arg, ",")[[1]]
+  }
   start_year <- as.integer(parse_arg("--start-year"))
   end_year <- as.integer(parse_arg("--end-year"))
   output <- parse_arg("--output") %||% output
@@ -284,6 +325,7 @@ if (identical(environmentName(environment()), "R_GlobalEnv") && !interactive()) 
     sponsor_field = sponsor_field,
     start_year = start_year,
     end_year = end_year,
+    base_urls = base_urls,
     output = output,
     file = outfile
   )
