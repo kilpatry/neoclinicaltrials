@@ -155,15 +155,35 @@ class ClinicalTrialsClient:
             if base is None:
                 continue
             try:
-                response = http.get(
-                    base,
-                    params=params,
-                    timeout=30,
-                    headers={
-                        "Accept": "application/json",
-                        "User-Agent": "neonatal-trials-py/1.0",
-                    },
-                )
+                headers = {
+                    "Accept": "application/json",
+                    "User-Agent": "neonatal-trials-py/1.0",
+                }
+
+                if "/api/v2/" in base:
+                    term = params.get("query.term")
+                    fields_param = params.get("fields", "")
+                    payload: Dict[str, Any] = {
+                        "query": {"term": term} if term else {},
+                        "fields": [f for f in fields_param.split(",") if f],
+                        "pageSize": params.get("pageSize"),
+                    }
+                    if params.get("pageToken"):
+                        payload["pageToken"] = params["pageToken"]
+
+                    response = http.post(
+                        base,
+                        json={k: v for k, v in payload.items() if v not in (None, {}, [])},
+                        timeout=30,
+                        headers=headers,
+                    )
+                else:
+                    response = http.get(
+                        base,
+                        params=params,
+                        timeout=30,
+                        headers=headers,
+                    )
                 response.raise_for_status()
                 content_type = response.headers.get("Content-Type", "")
                 if "json" not in content_type.lower():
