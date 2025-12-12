@@ -18,8 +18,12 @@ if TYPE_CHECKING:
     import requests
 
 API_BASE_URLS = [
+    # Primary v2 endpoint
+    "https://clinicaltrials.gov/api/v2/studies",
+    # Classic hostname mirrors the same API
+    "https://classic.clinicaltrials.gov/api/v2/studies",
+    # Legacy data-api paths retained for compatibility
     "https://clinicaltrials.gov/data-api/api/studies",
-    # Alternate path that has returned JSON more consistently in some environments
     "https://clinicaltrials.gov/data-api/v2/studies",
 ]
 DEFAULT_TERM = "neonatal"
@@ -142,7 +146,10 @@ class ClinicalTrialsClient:
         params: Dict[str, Any],
     ) -> tuple["requests.Response", str]:
         errors: List[str] = []
-        base_candidates = [self._active_base] if self._active_base else self.base_urls
+        base_candidates = []
+        if self._active_base:
+            base_candidates.append(self._active_base)
+        base_candidates.extend([url for url in self.base_urls if url != self._active_base])
 
         for base in base_candidates:
             if base is None:

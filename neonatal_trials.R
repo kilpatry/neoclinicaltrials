@@ -6,8 +6,12 @@
 # counts grouped by lead sponsor class.
 
 API_BASE_URLS <- c(
+  # Primary v2 endpoint
+  "https://clinicaltrials.gov/api/v2/studies",
+  # Classic hostname mirrors the same API
+  "https://classic.clinicaltrials.gov/api/v2/studies",
+  # Legacy data-api paths retained for compatibility
   "https://clinicaltrials.gov/data-api/api/studies",
-  # Alternate path that has returned JSON more consistently in some environments
   "https://clinicaltrials.gov/data-api/v2/studies"
 )
 DEFAULT_TERM <- "neonatal"
@@ -139,6 +143,7 @@ fetch_trials <- function(term = DEFAULT_TERM,
   page_token <- NULL
   base_candidates <- base_urls
   active_base <- NULL
+  errors <- character()
 
   for (i in seq_len(max_pages)) {
     paged_params <- params
@@ -148,7 +153,6 @@ fetch_trials <- function(term = DEFAULT_TERM,
 
     resp <- NULL
     parsed <- NULL
-    last_error <- NULL
 
     for (base in base_candidates) {
       attempt <- tryCatch({
@@ -186,7 +190,7 @@ fetch_trials <- function(term = DEFAULT_TERM,
 
         list(resp = candidate_resp, parsed = candidate_parsed)
       }, error = function(e) {
-        last_error <<- sprintf("%s: %s", base, conditionMessage(e))
+        errors <<- c(errors, sprintf("%s: %s", base, conditionMessage(e)))
         NULL
       })
 
@@ -205,7 +209,7 @@ fetch_trials <- function(term = DEFAULT_TERM,
           "Checked: %s. If you are behind a corporate proxy or network filter, try a VPN",
           "or override the base URLs passed to fetch_trials()."
         ),
-        paste(last_error, collapse = "; ")
+        paste(errors, collapse = "; ")
       ))
     }
 
