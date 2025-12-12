@@ -1,0 +1,340 @@
+"""
+CLI tool for summarizing neonatal clinical trials by year, lead sponsor class,
+overall status, conditions, intervention types, and study type using the
+ClinicalTrials.gov Data API.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import sys
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
+
+if TYPE_CHECKING:
+    import requests
+
+API_BASE_URL = "https://clinicaltrials.gov/data-api/api/studies"
+DEFAULT_TERM = "neonatal"
+DEFAULT_SPONSOR_FIELD = "sponsorInfo.leadSponsorClass"
+DEFAULT_STATUS_FIELD = "protocolSection.statusModule.overallStatus"
+DEFAULT_CONDITION_FIELD = "protocolSection.conditionsModule.conditions"
+DEFAULT_INTERVENTION_FIELD = "protocolSection.armsInterventionsModule.interventions"
+DEFAULT_STUDY_TYPE_FIELD = "protocolSection.designModule.studyType"
+DEFAULT_DATE_FIELDS = (
+    "protocolSection.startDateStruct.startDate",
+    "protocolSection.startDateStruct.date",
+    "protocolSection.startDateStruct.startDateDay",
+    "protocolSection.firstPostDateStruct.firstPostDate",
+)
+DEFAULT_PAGE_SIZE = 100
+
+
+@dataclass
+class TrialRecord:
+    year: Optional[int]
+    sponsor_class: str
+    status: str
+    conditions: List[str]
+    intervention_types: List[str]
+    study_type: str
+
+
+class ClinicalTrialsClient:
+    """Minimal client for the ClinicalTrials.gov Data API."""
+
+    def __init__(self, base_url: str = API_BASE_URL, session: Optional["requests.Session"] = None):
+        self.base_url = base_url.rstrip("/")
+        self.session = session
+
+    def fetch_trials(
+        self,
+        term: str = DEFAULT_TERM,
+        sponsor_field: str = DEFAULT_SPONSOR_FIELD,
+        status_field: str = DEFAULT_STATUS_FIELD,
+        condition_field: str = DEFAULT_CONDITION_FIELD,
+        intervention_field: str = DEFAULT_INTERVENTION_FIELD,
+        study_type_field: str = DEFAULT_STUDY_TYPE_FIELD,
+        date_fields: Iterable[str] = DEFAULT_DATE_FIELDS,
+        page_size: int = DEFAULT_PAGE_SIZE,
+        max_pages: int = 30,
+    ) -> List[TrialRecord]:
+        """Fetch trials matching the term and return simplified records."""
+
+        import requests
+
+        http = self.session or requests.Session()
+
+        params: Dict[str, Any] = {
+            "query.term": term,
+            "fields": ",".join(
+                [
+                    *date_fields,
+                    sponsor_field,
+                    status_field,
+                    condition_field,
+                    intervention_field,
+                    study_type_field,
+                ]
+            ),
+            "pageSize": page_size,
+        }
+
+        records: List[TrialRecord] = []
+        page_token: Optional[str] = None
+
+        for _ in range(max_pages):
+            paged_params = dict(params)
+            if page_token:
+                paged_params["pageToken"] = page_token
+
+            response = http.get(self.base_url, params=paged_params, timeout=30)
+            response.raise_for_status()
+            payload = response.json()
+
+            studies = payload.get("studies") or payload.get("results") or []
+            for study in studies:
+                records.append(
+                    self._extract_trial_record(
+                        study,
+                        sponsor_field=sponsor_field,
+                        status_field=status_field,
+                        condition_field=condition_field,
+                        intervention_field=intervention_field,
+                        study_type_field=study_type_field,
+                        date_fields=date_fields,
+                    )
+                )
+
+            page_token = payload.get("nextPageToken") or payload.get("next_page_token")
+            if not page_token:
+                break
+
+        return records
+
+    def _extract_trial_record(
+        self,
+        study: Dict[str, Any],
+        sponsor_field: str,
+        status_field: str,
+        condition_field: str,
+        intervention_field: str,
+        study_type_field: str,
+        date_fields: Iterable[str],
+    ) -> TrialRecord:
+        sponsor_class = (
+            self._get_nested_field(study, sponsor_field)
+            or self._get_nested_field(study, "sponsorInfo.leadSponsorClass")
+            or self._get_nested_field(study, "sponsors.lead_sponsor_class")
+            or "Unknown"
+        )
+
+        status = (
+            self._get_nested_field(study, status_field)
+            or self._get_nested_field(study, "status.overallStatus")
+            or "Unknown"
+        )
+
+        conditions = self._normalize_to_list(
+            self._get_nested_field(study, condition_field)
+            or self._get_nested_field(study, "conditions")
+            or []
+        )
+
+        intervention_entries = self._get_nested_field(study, intervention_field) or []
+        if isinstance(intervention_entries, list):
+            intervention_types = [
+                str(item.get("type", item)) for item in intervention_entries if item
+            ]
+        elif isinstance(intervention_entries, dict):
+            intervention_types = [str(intervention_entries.get("type"))]
+        else:
+            intervention_types = []
+
+        study_type = (
+            self._get_nested_field(study, study_type_field)
+            or self._get_nested_field(study, "studyType")
+            or "Unknown"
+        )
+
+        year_value = None
+        for field in date_fields:
+            value = self._get_nested_field(study, field)
+            if value:
+                year_value = self._parse_year(value)
+                if year_value:
+                    break
+
+        return TrialRecord(
+            year=year_value,
+            sponsor_class=str(sponsor_class),
+            status=str(status),
+            conditions=[str(c) for c in conditions if c],
+            intervention_types=[str(t) for t in intervention_types if t],
+            study_type=str(study_type),
+        )
+
+    @staticmethod
+    def _parse_year(value: Any) -> Optional[int]:
+        if isinstance(value, int):
+            return value
+        if not value:
+            return None
+
+        text = str(value)
+        for fmt in ("%Y-%m-%d", "%Y-%m", "%Y"):
+            try:
+                return datetime.strptime(text[: len(fmt)], fmt).year
+            except ValueError:
+                continue
+
+        # Fallback: grab first four digits
+        for token in text.split("-"):
+            if token.isdigit() and len(token) == 4:
+                return int(token)
+        return None
+
+    @staticmethod
+    def _get_nested_field(data: Dict[str, Any], dotted_path: str) -> Any:
+        value = data
+        for part in dotted_path.split("."):
+            if isinstance(value, dict) and part in value:
+                value = value[part]
+            else:
+                return None
+        return value
+
+    @staticmethod
+    def _normalize_to_list(value: Any) -> List[Any]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        return [value]
+
+
+def summarize_trials(
+    records: Iterable[TrialRecord], start_year: Optional[int] = None, end_year: Optional[int] = None
+) -> Dict[tuple, int]:
+    """Aggregate trials by year, sponsor, status, intervention type, and study type."""
+
+    summary: Dict[tuple, int] = defaultdict(int)
+
+    for record in records:
+        if record.year is None:
+            continue
+        if start_year and record.year < start_year:
+            continue
+        if end_year and record.year > end_year:
+            continue
+
+        intervention_types = record.intervention_types or ["None specified"]
+        conditions_key = "; ".join(sorted(set(record.conditions))) if record.conditions else "Unspecified"
+
+        for intervention_type in intervention_types:
+            key = (
+                record.year,
+                record.sponsor_class,
+                record.status,
+                record.study_type,
+                intervention_type,
+                conditions_key,
+            )
+            summary[key] += 1
+
+    return summary
+
+
+def summary_to_rows(summary: Dict[tuple, int]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for key, count in summary.items():
+        year, sponsor, status, study_type, intervention_type, conditions = key
+        rows.append(
+            {
+                "year": year,
+                "sponsor_class": sponsor,
+                "status": status,
+                "study_type": study_type,
+                "intervention_type": intervention_type,
+                "conditions": conditions,
+                "count": count,
+            }
+        )
+
+    rows.sort(
+        key=lambda r: (
+            r["year"],
+            r["sponsor_class"],
+            r["status"],
+            r["study_type"],
+            r["intervention_type"],
+            r["conditions"],
+        )
+    )
+    return rows
+
+
+def write_csv(rows: List[Dict[str, Any]], output_file) -> None:
+    if not rows:
+        output_file.write("year\n")
+        return
+
+    fieldnames = list(rows[0].keys())
+    writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row)
+
+
+def write_json(rows: List[Dict[str, Any]], output_file) -> None:
+    json.dump(rows, output_file, indent=2)
+    output_file.write("\n")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Summarize neonatal clinical trials with sponsor, status, condition, intervention type, and study type"
+    )
+    parser.add_argument("--term", default=DEFAULT_TERM, help="Search term for the API query (default: neonatal)")
+    parser.add_argument("--start-year", type=int, help="Earliest year to include")
+    parser.add_argument("--end-year", type=int, help="Latest year to include")
+    parser.add_argument(
+        "--sponsor-field",
+        default=DEFAULT_SPONSOR_FIELD,
+        help="Field path for sponsor class within the API response",
+    )
+    parser.add_argument(
+        "--output",
+        choices=["csv", "json"],
+        default="csv",
+        help="Output format printed to stdout",
+    )
+    parser.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE, help="Page size for API pagination")
+    parser.add_argument("--max-pages", type=int, default=30, help="Maximum number of pages to fetch")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    client = ClinicalTrialsClient()
+    records = client.fetch_trials(
+        term=args.term,
+        sponsor_field=args.sponsor_field,
+        page_size=args.page_size,
+        max_pages=args.max_pages,
+    )
+
+    summary = summarize_trials(records, start_year=args.start_year, end_year=args.end_year)
+    rows = summary_to_rows(summary)
+
+    if args.output == "json":
+        write_json(rows, output_file=sys.stdout)
+    else:
+        write_csv(rows, output_file=sys.stdout)
+
+
+if __name__ == "__main__":
+    main()
