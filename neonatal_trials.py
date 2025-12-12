@@ -1,6 +1,7 @@
 """
-CLI tool for summarizing neonatal clinical trials by year and lead sponsor class
-using the ClinicalTrials.gov Data API.
+CLI tool for summarizing neonatal clinical trials by year, lead sponsor class,
+overall status, conditions, intervention types, and study type using the
+ClinicalTrials.gov Data API.
 """
 from __future__ import annotations
 
@@ -19,6 +20,10 @@ if TYPE_CHECKING:
 API_BASE_URL = "https://clinicaltrials.gov/data-api/api/studies"
 DEFAULT_TERM = "neonatal"
 DEFAULT_SPONSOR_FIELD = "sponsorInfo.leadSponsorClass"
+DEFAULT_STATUS_FIELD = "protocolSection.statusModule.overallStatus"
+DEFAULT_CONDITION_FIELD = "protocolSection.conditionsModule.conditions"
+DEFAULT_INTERVENTION_FIELD = "protocolSection.armsInterventionsModule.interventions"
+DEFAULT_STUDY_TYPE_FIELD = "protocolSection.designModule.studyType"
 DEFAULT_DATE_FIELDS = (
     "protocolSection.startDateStruct.startDate",
     "protocolSection.startDateStruct.date",
@@ -32,6 +37,10 @@ DEFAULT_PAGE_SIZE = 100
 class TrialRecord:
     year: Optional[int]
     sponsor_class: str
+    status: str
+    conditions: List[str]
+    intervention_types: List[str]
+    study_type: str
 
 
 class ClinicalTrialsClient:
@@ -45,6 +54,10 @@ class ClinicalTrialsClient:
         self,
         term: str = DEFAULT_TERM,
         sponsor_field: str = DEFAULT_SPONSOR_FIELD,
+        status_field: str = DEFAULT_STATUS_FIELD,
+        condition_field: str = DEFAULT_CONDITION_FIELD,
+        intervention_field: str = DEFAULT_INTERVENTION_FIELD,
+        study_type_field: str = DEFAULT_STUDY_TYPE_FIELD,
         date_fields: Iterable[str] = DEFAULT_DATE_FIELDS,
         page_size: int = DEFAULT_PAGE_SIZE,
         max_pages: int = 30,
@@ -57,7 +70,16 @@ class ClinicalTrialsClient:
 
         params: Dict[str, Any] = {
             "query.term": term,
-            "fields": f"{','.join(date_fields)},{sponsor_field}",
+            "fields": ",".join(
+                [
+                    *date_fields,
+                    sponsor_field,
+                    status_field,
+                    condition_field,
+                    intervention_field,
+                    study_type_field,
+                ]
+            ),
             "pageSize": page_size,
         }
 
@@ -76,7 +98,15 @@ class ClinicalTrialsClient:
             studies = payload.get("studies") or payload.get("results") or []
             for study in studies:
                 records.append(
-                    self._extract_trial_record(study, sponsor_field=sponsor_field, date_fields=date_fields)
+                    self._extract_trial_record(
+                        study,
+                        sponsor_field=sponsor_field,
+                        status_field=status_field,
+                        condition_field=condition_field,
+                        intervention_field=intervention_field,
+                        study_type_field=study_type_field,
+                        date_fields=date_fields,
+                    )
                 )
 
             page_token = payload.get("nextPageToken") or payload.get("next_page_token")
@@ -86,12 +116,47 @@ class ClinicalTrialsClient:
         return records
 
     def _extract_trial_record(
-        self, study: Dict[str, Any], sponsor_field: str, date_fields: Iterable[str]
+        self,
+        study: Dict[str, Any],
+        sponsor_field: str,
+        status_field: str,
+        condition_field: str,
+        intervention_field: str,
+        study_type_field: str,
+        date_fields: Iterable[str],
     ) -> TrialRecord:
         sponsor_class = (
             self._get_nested_field(study, sponsor_field)
             or self._get_nested_field(study, "sponsorInfo.leadSponsorClass")
             or self._get_nested_field(study, "sponsors.lead_sponsor_class")
+            or "Unknown"
+        )
+
+        status = (
+            self._get_nested_field(study, status_field)
+            or self._get_nested_field(study, "status.overallStatus")
+            or "Unknown"
+        )
+
+        conditions = self._normalize_to_list(
+            self._get_nested_field(study, condition_field)
+            or self._get_nested_field(study, "conditions")
+            or []
+        )
+
+        intervention_entries = self._get_nested_field(study, intervention_field) or []
+        if isinstance(intervention_entries, list):
+            intervention_types = [
+                str(item.get("type", item)) for item in intervention_entries if item
+            ]
+        elif isinstance(intervention_entries, dict):
+            intervention_types = [str(intervention_entries.get("type"))]
+        else:
+            intervention_types = []
+
+        study_type = (
+            self._get_nested_field(study, study_type_field)
+            or self._get_nested_field(study, "studyType")
             or "Unknown"
         )
 
@@ -103,7 +168,14 @@ class ClinicalTrialsClient:
                 if year_value:
                     break
 
-        return TrialRecord(year=year_value, sponsor_class=str(sponsor_class))
+        return TrialRecord(
+            year=year_value,
+            sponsor_class=str(sponsor_class),
+            status=str(status),
+            conditions=[str(c) for c in conditions if c],
+            intervention_types=[str(t) for t in intervention_types if t],
+            study_type=str(study_type),
+        )
 
     @staticmethod
     def _parse_year(value: Any) -> Optional[int]:
@@ -135,11 +207,21 @@ class ClinicalTrialsClient:
                 return None
         return value
 
+    @staticmethod
+    def _normalize_to_list(value: Any) -> List[Any]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        return [value]
 
-def summarize_by_year_and_sponsor(
+
+def summarize_trials(
     records: Iterable[TrialRecord], start_year: Optional[int] = None, end_year: Optional[int] = None
-) -> Dict[int, Dict[str, int]]:
-    summary: Dict[int, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+) -> Dict[tuple, int]:
+    """Aggregate trials by year, sponsor, status, intervention type, and study type."""
+
+    summary: Dict[tuple, int] = defaultdict(int)
 
     for record in records:
         if record.year is None:
@@ -148,22 +230,50 @@ def summarize_by_year_and_sponsor(
             continue
         if end_year and record.year > end_year:
             continue
-        summary[record.year][record.sponsor_class] += 1
+
+        intervention_types = record.intervention_types or ["None specified"]
+        conditions_key = "; ".join(sorted(set(record.conditions))) if record.conditions else "Unspecified"
+
+        for intervention_type in intervention_types:
+            key = (
+                record.year,
+                record.sponsor_class,
+                record.status,
+                record.study_type,
+                intervention_type,
+                conditions_key,
+            )
+            summary[key] += 1
 
     return summary
 
 
-def summary_to_rows(summary: Dict[int, Dict[str, int]]) -> List[Dict[str, Any]]:
-    if not summary:
-        return []
-
-    sponsors = sorted({sponsor for year_counts in summary.values() for sponsor in year_counts})
+def summary_to_rows(summary: Dict[tuple, int]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
-    for year in sorted(summary):
-        base = {"year": year}
-        for sponsor in sponsors:
-            base[sponsor] = summary[year].get(sponsor, 0)
-        rows.append(base)
+    for key, count in summary.items():
+        year, sponsor, status, study_type, intervention_type, conditions = key
+        rows.append(
+            {
+                "year": year,
+                "sponsor_class": sponsor,
+                "status": status,
+                "study_type": study_type,
+                "intervention_type": intervention_type,
+                "conditions": conditions,
+                "count": count,
+            }
+        )
+
+    rows.sort(
+        key=lambda r: (
+            r["year"],
+            r["sponsor_class"],
+            r["status"],
+            r["study_type"],
+            r["intervention_type"],
+            r["conditions"],
+        )
+    )
     return rows
 
 
@@ -185,7 +295,9 @@ def write_json(rows: List[Dict[str, Any]], output_file) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Summarize neonatal clinical trials by year and sponsor class")
+    parser = argparse.ArgumentParser(
+        description="Summarize neonatal clinical trials with sponsor, status, condition, intervention type, and study type"
+    )
     parser.add_argument("--term", default=DEFAULT_TERM, help="Search term for the API query (default: neonatal)")
     parser.add_argument("--start-year", type=int, help="Earliest year to include")
     parser.add_argument("--end-year", type=int, help="Latest year to include")
@@ -215,7 +327,7 @@ def main() -> None:
         max_pages=args.max_pages,
     )
 
-    summary = summarize_by_year_and_sponsor(records, start_year=args.start_year, end_year=args.end_year)
+    summary = summarize_trials(records, start_year=args.start_year, end_year=args.end_year)
     rows = summary_to_rows(summary)
 
     if args.output == "json":

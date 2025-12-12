@@ -1,17 +1,19 @@
 # Neonatal Clinical Trials Explorer
 
-This repository contains a small Python tool for exploring the number of
-neonatal clinical trials reported on ClinicalTrials.gov by year and lead
-sponsor type. It queries the ClinicalTrials.gov Data API and aggregates
-results into a year-by-sponsor summary table that can be exported as JSON
-or CSV.
+This repository contains a small Python tool for exploring neonatal clinical
+trials reported on ClinicalTrials.gov with yearly counts that factor in lead
+sponsor type, overall status, conditions, intervention types, and study type
+intervention/observational. It queries the ClinicalTrials.gov Data API and
+aggregates results into a tidy summary table that can be exported as JSON or
+CSV.
 
 ## Features
 
 - Fetch neonatal-focused trials (default search term `neonatal`) from the
   ClinicalTrials.gov Data API.
-- Aggregate trials by start year (or first posted year) and lead sponsor
-  class (e.g., Industry, NIH, Other).
+- Aggregate trials by start year (or first posted year), lead sponsor class,
+  overall status, conditions, intervention types (Drug, Procedure, etc.), and
+  study type (Interventional vs. Observational).
 - Export the aggregated counts as CSV or JSON for further analysis or
   visualization.
 
@@ -31,7 +33,8 @@ pip install -r requirements.txt
 
 An R companion script (`neonatal_trials.R`) is included for users who prefer
 RStudio. It mirrors the Python CLI behavior, returning a data frame of yearly
-counts by sponsor class or writing the summary to CSV.
+counts by sponsor class, status, condition grouping, intervention type, and
+study type, or writing the summary to CSV.
 
 Install the required R packages:
 
@@ -87,6 +90,16 @@ If you prefer a CSV that can be saved to disk:
 python neonatal_trials.py --output csv > neonatal_counts.csv
 ```
 
+The output table includes these columns:
+
+- `year`: parsed start/posting year
+- `sponsor_class`: lead sponsor class (Industry, NIH, Other, Unknown)
+- `status`: overall study status
+- `study_type`: Interventional, Observational, etc.
+- `intervention_type`: intervention category for the record (one row per type)
+- `conditions`: semicolon-delimited condition list for the grouped row
+- `count`: number of studies matching the combination
+
 ### API Notes
 
 The script targets the ClinicalTrials.gov Data API documented at
@@ -99,6 +112,10 @@ in the API response:
   `protocolSection.startDateStruct.date`)
 - `protocolSection.firstPostDateStruct.firstPostDate`
 - `sponsorInfo.leadSponsorClass`
+- `protocolSection.statusModule.overallStatus`
+- `protocolSection.conditionsModule.conditions`
+- `protocolSection.armsInterventionsModule.interventions`
+- `protocolSection.designModule.studyType`
 
 The tool will fall back to alternate fields if these are missing.
 
