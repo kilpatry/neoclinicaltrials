@@ -27,6 +27,37 @@ Install dependencies with:
 pip install -r requirements.txt
 ```
 
+## Use from R / RStudio
+
+An R companion script (`neonatal_trials.R`) is included for users who prefer
+RStudio. It mirrors the Python CLI behavior, returning a data frame of yearly
+counts by sponsor class or writing the summary to CSV.
+
+Install the required R packages:
+
+```r
+install.packages(c("httr", "jsonlite"))
+```
+
+Load and run in RStudio:
+
+```r
+source("neonatal_trials.R")
+
+# Fetch a data frame
+summary_df <- summarize_neonatal_trials(start_year = 2010, end_year = 2024)
+print(summary_df)
+
+# Or write CSV output directly
+summarize_neonatal_trials(start_year = 2010, end_year = 2024, output = "csv", file = "neonatal_counts.csv")
+```
+
+You can also run it non-interactively:
+
+```bash
+Rscript neonatal_trials.R --start-year 2010 --end-year 2024 --output csv --file neonatal_counts.csv
+```
+
 ## Usage
 
 Run the CLI with default parameters:
