@@ -147,50 +147,58 @@ fetch_trials <- function(term = DEFAULT_TERM,
     }
 
     resp <- NULL
+    parsed <- NULL
     last_error <- NULL
 
     for (base in base_candidates) {
-      try({
-        resp <- httr::GET(
+      attempt <- tryCatch({
+        candidate_resp <- httr::GET(
           base,
           query = paged_params,
           httr::timeout(30),
           httr::accept_json(),
           httr::user_agent("neonatal-trials-r/1.0")
         )
-        httr::stop_for_status(resp)
+        httr::stop_for_status(candidate_resp)
 
-        content_type <- httr::http_type(resp)
-        payload <- httr::content(resp, as = "text", encoding = "UTF-8")
+        content_type <- httr::http_type(candidate_resp)
+        payload <- httr::content(candidate_resp, as = "text", encoding = "UTF-8")
         if (!grepl("json", content_type, ignore.case = TRUE)) {
           preview <- substr(payload, 1, 200)
           stop(sprintf(
             "ClinicalTrials.gov API returned non-JSON content (type: %s, status: %s). Response preview: %s",
             content_type,
-            httr::status_code(resp),
+            httr::status_code(candidate_resp),
             preview
           ))
         }
 
-        parsed <- tryCatch(
+        candidate_parsed <- tryCatch(
           jsonlite::fromJSON(payload, simplifyVector = FALSE),
           error = function(e) {
             stop(sprintf(
               "Unable to parse ClinicalTrials.gov response as JSON (status: %s). First 200 characters: %s",
-              httr::status_code(resp),
+              httr::status_code(candidate_resp),
               substr(payload, 1, 200)
             ))
           }
         )
-        active_base <- base
-        break
+
+        list(resp = candidate_resp, parsed = candidate_parsed)
       }, error = function(e) {
         last_error <<- sprintf("%s: %s", base, conditionMessage(e))
-        resp <<- NULL
+        NULL
       })
+
+      if (!is.null(attempt)) {
+        resp <- attempt$resp
+        parsed <- attempt$parsed
+        active_base <- base
+        break
+      }
     }
 
-    if (is.null(resp)) {
+    if (is.null(resp) || is.null(parsed)) {
       stop(sprintf(
         paste(
           "Unable to retrieve JSON from ClinicalTrials.gov API after trying all base URLs.",
