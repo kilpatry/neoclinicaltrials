@@ -126,7 +126,8 @@ fetch_trials <- function(term = DEFAULT_TERM,
     "query.term" = term,
     fields = paste(c(date_fields, sponsor_field, status_field, condition_field,
                      intervention_field, study_type_field), collapse = ","),
-    pageSize = page_size
+    pageSize = page_size,
+    format = "json"
   )
 
   records <- list()
@@ -142,13 +143,14 @@ fetch_trials <- function(term = DEFAULT_TERM,
       API_BASE_URL,
       query = paged_params,
       httr::timeout(30),
-      httr::add_headers(Accept = "application/json")
+      httr::accept_json(),
+      httr::user_agent("neonatal-trials-r/1.0")
     )
     httr::stop_for_status(resp)
 
     content_type <- httr::http_type(resp)
     payload <- httr::content(resp, as = "text", encoding = "UTF-8")
-    if (content_type != "application/json") {
+    if (!grepl("json", content_type, ignore.case = TRUE)) {
       preview <- substr(payload, 1, 200)
       stop(sprintf(
         "ClinicalTrials.gov API returned non-JSON content (type: %s, status: %s). Response preview: %s",

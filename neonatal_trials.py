@@ -81,6 +81,7 @@ class ClinicalTrialsClient:
                 ]
             ),
             "pageSize": page_size,
+            "format": "json",
         }
 
         records: List[TrialRecord] = []
@@ -91,9 +92,32 @@ class ClinicalTrialsClient:
             if page_token:
                 paged_params["pageToken"] = page_token
 
-            response = http.get(self.base_url, params=paged_params, timeout=30)
+            response = http.get(
+                self.base_url,
+                params=paged_params,
+                timeout=30,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "neonatal-trials-py/1.0",
+                },
+            )
             response.raise_for_status()
-            payload = response.json()
+
+            content_type = response.headers.get("Content-Type", "")
+            text_payload = response.text
+            if "json" not in content_type.lower():
+                preview = text_payload[:200]
+                raise ValueError(
+                    f"ClinicalTrials.gov API returned non-JSON content (type: {content_type}, status: {response.status_code}). Response preview: {preview}"
+                )
+
+            try:
+                payload = response.json()
+            except ValueError as exc:  # JSONDecodeError is a subclass
+                preview = text_payload[:200]
+                raise ValueError(
+                    f"Unable to parse ClinicalTrials.gov response as JSON (status: {response.status_code}). First 200 characters: {preview}"
+                ) from exc
 
             studies = payload.get("studies") or payload.get("results") or []
             for study in studies:
