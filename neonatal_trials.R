@@ -285,30 +285,11 @@ fetch_trials <- function(term = DEFAULT_TERM,
           httr::user_agent("neonatal-trials-r/1.0")
         )
 
-        if (is_v2) {
-          fields_param <- strsplit(paged_params$fields, ",")[[1]]
-          body <- list(
-            query = if (!is.null(paged_params[["query.expr"]])) list(expr = paged_params[["query.expr"]])
-              else if (!is.null(paged_params[["query.term"]])) list(expr = paged_params[["query.term"]]) else list(),
-            fields = fields_param[nzchar(fields_param)],
-            pageSize = paged_params$pageSize
-          )
-          if (!is.null(paged_params$pageToken)) {
-            body$pageToken <- paged_params$pageToken
-          }
-          candidate_resp <- httr::POST(
-            base,
-            body = body,
-            encode = "json",
-            headers
-          )
-        } else {
-          candidate_resp <- httr::GET(
-            base,
-            query = paged_params,
-            headers
-          )
-        }
+        candidate_resp <- httr::GET(
+          base,
+          query = paged_params,
+          headers
+        )
 
         httr::stop_for_status(candidate_resp)
 
