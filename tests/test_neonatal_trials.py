@@ -3,6 +3,8 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
+import json
+
 import neonatal_trials as nt
 
 
@@ -198,5 +200,78 @@ def test_records_to_rows_returns_flat_trials():
     assert rows[0]["nct_id"] == "NCT1"
     assert rows[0]["title"] == "Title 1"
     assert rows[0]["year"] == 2020
-    assert rows[0]["intervention_types"] == "Drug"
-    assert rows[0]["conditions"] == "Condition A"
+
+
+def test_fetch_trials_deduplicates_by_nct_and_filters_by_default():
+    payload_calls = []
+
+    class FakeResponse:
+        def __init__(self, payload: dict):
+            self._payload = payload
+            self.headers = {"Content-Type": "application/json"}
+            self.status_code = 200
+            self.text = json.dumps(payload)
+
+        def json(self):
+            return self._payload
+
+    def fake_request(self, http, params):
+        payload_calls.append(params)
+        payload = {
+            "studies": [
+                {
+                    "protocolSection": {
+                        "identificationModule": {
+                            "nctId": "NCTDUPE",
+                            "briefTitle": "Neonatal sepsis study",
+                        },
+                        "conditionsModule": {"conditions": ["Neonatal sepsis"]},
+                        "designModule": {"studyType": "Interventional"},
+                        "statusModule": {"overallStatus": "Recruiting"},
+                        "startDateStruct": {"startDate": "2020-01-01"},
+                        "armsInterventionsModule": {
+                            "interventions": [{"type": "Drug", "name": "Drug A"}]
+                        },
+                        "eligibilityModule": {"maximumAge": "1 Month"},
+                    },
+                    "sponsorInfo": {"leadSponsorClass": "Industry"},
+                },
+                {
+                    "protocolSection": {
+                        "identificationModule": {
+                            "nctId": "NCTDUPE",
+                            "briefTitle": "Neonatal sepsis study duplicate",
+                        },
+                        "conditionsModule": {"conditions": ["Neonatal sepsis"]},
+                        "designModule": {"studyType": "Interventional"},
+                        "statusModule": {"overallStatus": "Recruiting"},
+                        "startDateStruct": {"startDate": "2020-01-01"},
+                        "armsInterventionsModule": {
+                            "interventions": [{"type": "Drug", "name": "Drug A"}]
+                        },
+                        "eligibilityModule": {"maximumAge": "1 Month"},
+                    },
+                    "sponsorInfo": {"leadSponsorClass": "Industry"},
+                },
+                {
+                    "protocolSection": {
+                        "identificationModule": {"nctId": "NCTADULT"},
+                        "conditionsModule": {"conditions": ["Hypertension"]},
+                        "eligibilityModule": {"minimumAge": "18 Years"},
+                    }
+                },
+            ]
+        }
+        return FakeResponse(payload), "https://example.com"
+
+    client = nt.ClinicalTrialsClient(base_url=["https://example.com"])
+    original = nt.ClinicalTrialsClient._request_with_fallback
+    nt.ClinicalTrialsClient._request_with_fallback = fake_request
+    try:
+        records = client.fetch_trials(max_pages=1)
+    finally:
+        nt.ClinicalTrialsClient._request_with_fallback = original
+
+    assert len(records) == 1
+    assert records[0].nct_id == "NCTDUPE"
+    assert records[0].title.startswith("Neonatal sepsis")

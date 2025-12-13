@@ -242,7 +242,7 @@ fetch_trials <- function(term = DEFAULT_TERM,
                          page_size = DEFAULT_PAGE_SIZE,
                          max_pages = 30,
                          keywords = NEONATAL_KEYWORDS,
-                         apply_filter = FALSE) {
+                         apply_filter = TRUE) {
   requireNamespace("httr", quietly = TRUE)
   requireNamespace("jsonlite", quietly = TRUE)
 
@@ -256,6 +256,7 @@ fetch_trials <- function(term = DEFAULT_TERM,
   )
 
   records <- list()
+  seen_ids <- character()
   page_token <- NULL
   base_candidates <- base_urls
   active_base <- NULL
@@ -373,15 +374,24 @@ fetch_trials <- function(term = DEFAULT_TERM,
       keepers[[length(keepers) + 1]] <- study
     }
 
-    records <- c(records, lapply(keepers, extract_trial_record,
-                                 sponsor_field = sponsor_field,
-                                 status_field = status_field,
-                                 nct_field = nct_field,
-                                 title_fields = title_fields,
-                                 condition_field = condition_field,
-                                 intervention_field = intervention_field,
-                                 study_type_field = study_type_field,
-                                 date_fields = date_fields))
+    extracted <- lapply(keepers, extract_trial_record,
+                        sponsor_field = sponsor_field,
+                        status_field = status_field,
+                        nct_field = nct_field,
+                        title_fields = title_fields,
+                        condition_field = condition_field,
+                        intervention_field = intervention_field,
+                        study_type_field = study_type_field,
+                        date_fields = date_fields)
+
+    for (rec in extracted) {
+      rec_id <- rec$nct_id
+      if (!is.null(rec_id) && nzchar(rec_id) && !identical(rec_id, "Unknown")) {
+        if (rec_id %in% seen_ids) next
+        seen_ids <- c(seen_ids, rec_id)
+      }
+      records[[length(records) + 1]] <- rec
+    }
 
     page_token <- parsed$nextPageToken %||% parsed$next_page_token
     if (is.null(page_token)) break
@@ -473,7 +483,7 @@ summarize_neonatal_trials <- function(term = DEFAULT_TERM,
                                       base_urls = API_BASE_URLS,
                                       page_size = DEFAULT_PAGE_SIZE,
                                       max_pages = 30,
-                                      strict_filter = FALSE,
+                                      strict_filter = TRUE,
                                       mode = c("records", "summary"),
                                       output = c("data.frame", "csv"),
                                       file = "") {
@@ -514,7 +524,7 @@ if (identical(environmentName(environment()), "R_GlobalEnv") && !interactive()) 
   output <- "data.frame"
   outfile <- ""
   base_urls <- API_BASE_URLS
-  strict_filter <- FALSE
+  strict_filter <- TRUE
   mode <- "records"
 
   parse_arg <- function(flag) {
@@ -532,8 +542,8 @@ if (identical(environmentName(environment()), "R_GlobalEnv") && !interactive()) 
   end_year <- as.integer(parse_arg("--end-year"))
   output <- parse_arg("--output") %||% output
   outfile <- parse_arg("--file") %||% outfile
-  if (!is.null(parse_arg("--strict-filter"))) {
-    strict_filter <- TRUE
+  if (!is.null(parse_arg("--no-filter"))) {
+    strict_filter <- FALSE
   }
   mode <- parse_arg("--mode") %||% mode
 

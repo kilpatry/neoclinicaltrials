@@ -109,7 +109,7 @@ class ClinicalTrialsClient:
         min_age_field: str = DEFAULT_MIN_AGE_FIELD,
         max_age_field: str = DEFAULT_MAX_AGE_FIELD,
         neonatal_keywords: Iterable[str] = DEFAULT_NEONATAL_KEYWORDS,
-        apply_filter: bool = False,
+        apply_filter: bool = True,
     ) -> List[TrialRecord]:
         """Fetch trials matching the term and return simplified records."""
 
@@ -138,6 +138,7 @@ class ClinicalTrialsClient:
         }
 
         records: List[TrialRecord] = []
+        seen_ids: set[str] = set()
         page_token: Optional[str] = None
 
         for _ in range(max_pages):
@@ -172,19 +173,25 @@ class ClinicalTrialsClient:
                     ):
                         continue
 
-                records.append(
-                    self._extract_trial_record(
-                        study,
-                        nct_field=nct_field,
-                        title_fields=title_fields,
-                        sponsor_field=sponsor_field,
-                        status_field=status_field,
-                        condition_field=condition_field,
-                        intervention_field=intervention_field,
-                        study_type_field=study_type_field,
-                        date_fields=date_fields,
-                    )
+                record = self._extract_trial_record(
+                    study,
+                    nct_field=nct_field,
+                    title_fields=title_fields,
+                    sponsor_field=sponsor_field,
+                    status_field=status_field,
+                    condition_field=condition_field,
+                    intervention_field=intervention_field,
+                    study_type_field=study_type_field,
+                    date_fields=date_fields,
                 )
+
+                record_id = record.nct_id
+                if record_id and record_id != "Unknown":
+                    if record_id in seen_ids:
+                        continue
+                    seen_ids.add(record_id)
+
+                records.append(record)
 
             page_token = payload.get("nextPageToken") or payload.get("next_page_token")
             if not page_token:
@@ -604,10 +611,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE, help="Page size for API pagination")
     parser.add_argument("--max-pages", type=int, default=30, help="Maximum number of pages to fetch")
     parser.add_argument(
-        "--strict-filter",
+        "--no-filter",
         action="store_true",
         help=(
-            "Apply client-side neonatal filtering (keywords + age). Disabled by default to avoid dropping valid studies."
+            "Disable neonatal keyword/age filtering. Enabled by default to keep the results neonatal-focused."
         ),
     )
     parser.add_argument(
@@ -628,7 +635,7 @@ def main() -> None:
         sponsor_field=args.sponsor_field,
         page_size=args.page_size,
         max_pages=args.max_pages,
-        apply_filter=args.strict_filter,
+        apply_filter=not args.no_filter,
     )
 
     if args.mode == "summary":

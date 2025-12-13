@@ -9,10 +9,9 @@ frame or aggregates results into a tidy summary table that can be exported as
 JSON or CSV. Trials are filtered client-side to stay neonatal-focused using a
 broader set of search terms (neonate, newborn, preterm, etc.), study titles,
 condition keywords, and age eligibility (preferring maximum age ≤ 90 days).
-Client-side filtering is now optional (disabled by default) so you can retrieve
-the full set of matching studies when running into overly restrictive results;
-use the `--strict-filter` flag (or `strict_filter = TRUE` in R) to re-enable
-it.
+Client-side filtering is enabled by default to keep results neonatal-focused;
+pass `--no-filter` (or `strict_filter = FALSE` in R) if you need to inspect the
+broader set of studies returned by the API term alone.
 
 ## Features
 
@@ -26,6 +25,8 @@ it.
   study type (Interventional vs. Observational) when you need grouped counts.
 - Export either per-study rows or aggregated counts as CSV or JSON for further
   analysis or visualization.
+- Deduplicate trials by NCT ID across pages to avoid repeated rows in the
+  record-level output.
 
 ## Requirements
 
@@ -94,8 +95,8 @@ Key options:
 - `--output csv|json`: format of the output (printed to stdout).
 - `--max-pages`: safety bound on how many pages to pull from the API
   (defaults to 30).
-- `--strict-filter`: enable client-side keyword/age neonatal filtering (off by
-  default to avoid dropping valid results).
+- `--no-filter`: disable client-side keyword/age neonatal filtering (on by
+  default to keep results neonatal-focused).
 
 Example fetching per-study rows first posted since 2010 and printing JSON:
 
