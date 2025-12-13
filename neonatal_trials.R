@@ -249,12 +249,21 @@ fetch_trials <- function(term = DEFAULT_TERM,
   requireNamespace("httr", quietly = TRUE)
   requireNamespace("jsonlite", quietly = TRUE)
 
+  field_list <- c(date_fields, sponsor_field, status_field, condition_field,
+                  intervention_field, study_type_field, nct_field, title_fields,
+                  min_age_field, max_age_field)
+
   params <- list(
     "query.term" = term,
     "query.expr" = term,
-    fields = paste(c(date_fields, sponsor_field, status_field, condition_field,
-                     intervention_field, study_type_field, nct_field, title_fields,
-                     min_age_field, max_age_field), collapse = ","),
+    fields = paste(field_list, collapse = ","),
+    pageSize = page_size,
+    format = "json"
+  )
+
+  payload <- list(
+    query = list(expr = term),
+    fields = field_list,
     pageSize = page_size,
     format = "json"
   )
@@ -269,65 +278,89 @@ fetch_trials <- function(term = DEFAULT_TERM,
   page_counter <- 0
   repeat {
     paged_params <- params
+    paged_payload <- payload
     if (!is.null(page_token)) {
       paged_params$pageToken <- page_token
+      paged_payload$pageToken <- page_token
     }
 
     resp <- NULL
     parsed <- NULL
 
     for (base in base_candidates) {
-      attempt <- tryCatch({
-        is_v2 <- grepl("/api/v2/", base)
-        headers <- list(
-          httr::timeout(30),
-          httr::accept_json(),
-          httr::user_agent("neonatal-trials-r/1.0")
-        )
+      methods <- if (grepl("/api/v2/", base)) c("POST", "GET") else "GET"
 
-        candidate_resp <- httr::GET(
-          base,
-          query = paged_params,
-          headers
-        )
+      for (method in methods) {
+        attempt <- tryCatch({
+          headers <- list(
+            httr::timeout(30),
+            httr::accept_json(),
+            httr::user_agent("neonatal-trials-r/1.0")
+          )
 
-        httr::stop_for_status(candidate_resp)
+          candidate_resp <- if (identical(method, "POST")) {
+            httr::POST(
+              base,
+              body = paged_payload,
+              encode = "json",
+              headers
+            )
+          } else {
+            httr::GET(
+              base,
+              query = paged_params,
+              headers
+            )
+          }
 
-        content_type <- httr::http_type(candidate_resp)
-        payload <- httr::content(candidate_resp, as = "text", encoding = "UTF-8")
-        if (!grepl("json", content_type, ignore.case = TRUE)) {
-          preview <- substr(payload, 1, 200)
-          stop(sprintf(
-            "ClinicalTrials.gov API returned non-JSON content (type: %s, status: %s). Response preview: %s",
-            content_type,
-            httr::status_code(candidate_resp),
-            preview
-          ))
-        }
-
-        candidate_parsed <- tryCatch(
-          jsonlite::fromJSON(payload, simplifyVector = FALSE),
-          error = function(e) {
+          if (httr::status_code(candidate_resp) >= 400) {
+            preview <- substr(httr::content(candidate_resp, as = "text", encoding = "UTF-8"), 1, 200)
             stop(sprintf(
-              "Unable to parse ClinicalTrials.gov response as JSON (status: %s). First 200 characters: %s",
+              "%s (HTTP %s). Response preview: %s",
+              httr::http_status(candidate_resp)$message,
               httr::status_code(candidate_resp),
-              substr(payload, 1, 200)
+              preview
             ))
           }
-        )
 
-        list(resp = candidate_resp, parsed = candidate_parsed)
-      }, error = function(e) {
-        errors <<- c(errors, sprintf("%s: %s", base, conditionMessage(e)))
-        NULL
-      })
+          content_type <- httr::http_type(candidate_resp)
+          text_payload <- httr::content(candidate_resp, as = "text", encoding = "UTF-8")
+          if (!grepl("json", content_type, ignore.case = TRUE)) {
+            preview <- substr(text_payload, 1, 200)
+            stop(sprintf(
+              "ClinicalTrials.gov API returned non-JSON content (type: %s, status: %s). Response preview: %s",
+              content_type,
+              httr::status_code(candidate_resp),
+              preview
+            ))
+          }
 
-      if (!is.null(attempt)) {
-        resp <- attempt$resp
-        parsed <- attempt$parsed
-        active_base <- base
-      break
-    }
+          candidate_parsed <- tryCatch(
+            jsonlite::fromJSON(text_payload, simplifyVector = FALSE),
+            error = function(e) {
+              stop(sprintf(
+                "Unable to parse ClinicalTrials.gov response as JSON (status: %s). First 200 characters: %s",
+                httr::status_code(candidate_resp),
+                substr(text_payload, 1, 200)
+              ))
+            }
+          )
+
+          list(resp = candidate_resp, parsed = candidate_parsed)
+        }, error = function(e) {
+          errors <<- c(errors, sprintf("%s (%s): %s", base, method, conditionMessage(e)))
+          NULL
+        })
+
+        if (!is.null(attempt)) {
+          resp <- attempt$resp
+          parsed <- attempt$parsed
+          active_base <- base
+          break
+        }
+      }
+
+      if (!is.null(resp)) break
     }
 
     if (is.null(resp) || is.null(parsed)) {

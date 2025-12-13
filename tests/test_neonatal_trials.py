@@ -246,8 +246,8 @@ def test_fetch_trials_deduplicates_by_nct_and_filters_by_default():
         def json(self):
             return self._payload
 
-    def fake_request(self, http, params):
-        payload_calls.append(params)
+    def fake_request(self, http, params, json_payload):
+        payload_calls.append({"params": params, "json": json_payload})
         payload = {
             "studies": [
                 {

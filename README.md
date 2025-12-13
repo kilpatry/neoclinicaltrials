@@ -163,8 +163,9 @@ If you encounter an HTML response instead of JSON (common behind some
 proxies), both the Python and R clients will automatically retry against
 several base URLs (`https://clinicaltrials.gov/api/v2/studies`,
 `https://classic.clinicaltrials.gov/api/v2/studies`, and legacy
-`data-api` paths). Requests to all endpoints use GET with standard query
-parameters; you can supply your own base URLs to override this behavior:
+`data-api` paths). v2 endpoints are tried with POST (JSON body) and then
+GET as a fallback, while legacy endpoints use GET only. You can supply
+your own base URLs to override this behavior:
 
 ```bash
 python neonatal_trials.py --base-url https://your-proxy.example/api/studies

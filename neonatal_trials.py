@@ -117,23 +117,30 @@ class ClinicalTrialsClient:
 
         http = self.session or requests.Session()
 
+        field_list = [
+            *date_fields,
+            sponsor_field,
+            status_field,
+            condition_field,
+            intervention_field,
+            study_type_field,
+            nct_field,
+            *title_fields,
+            min_age_field,
+            max_age_field,
+        ]
+
         params: Dict[str, Any] = {
             "query.term": term,
             "query.expr": term,
-            "fields": ",".join(
-                [
-                    *date_fields,
-                    sponsor_field,
-                    status_field,
-                    condition_field,
-                    intervention_field,
-                    study_type_field,
-                    nct_field,
-                    *title_fields,
-                    min_age_field,
-                    max_age_field,
-                ]
-            ),
+            "fields": ",".join(field_list),
+            "pageSize": page_size,
+            "format": "json",
+        }
+
+        json_payload: Dict[str, Any] = {
+            "query": {"expr": term},
+            "fields": field_list,
             "pageSize": page_size,
             "format": "json",
         }
@@ -145,10 +152,15 @@ class ClinicalTrialsClient:
         pages_fetched = 0
         while True:
             paged_params = dict(params)
+            paged_json = dict(json_payload)
+            paged_json["query"] = dict(json_payload.get("query", {}))
             if page_token:
                 paged_params["pageToken"] = page_token
+                paged_json["pageToken"] = page_token
 
-            response, base_used = self._request_with_fallback(http, paged_params)
+            response, base_used = self._request_with_fallback(
+                http, paged_params, paged_json
+            )
             self._active_base = base_used
 
             content_type = response.headers.get("Content-Type", "")
@@ -208,6 +220,7 @@ class ClinicalTrialsClient:
         self,
         http: "requests.Session",
         params: Dict[str, Any],
+        json_payload: Dict[str, Any],
     ) -> tuple["requests.Response", str]:
         errors: List[str] = []
         base_candidates = []
@@ -218,30 +231,52 @@ class ClinicalTrialsClient:
         for base in base_candidates:
             if base is None:
                 continue
-            try:
-                headers = {
-                    "Accept": "application/json",
-                    "User-Agent": "neonatal-trials-py/1.0",
-                }
+            methods: List[str] = []
+            is_v2 = "/api/v2/" in base
+            if is_v2:
+                methods.append("POST")
+            methods.append("GET")
 
-                response = http.get(
-                    base,
-                    params=params,
-                    timeout=30,
-                    headers=headers,
-                )
-                response.raise_for_status()
-                content_type = response.headers.get("Content-Type", "")
-                if "json" not in content_type.lower():
-                    preview = response.text[:200]
-                    raise ValueError(
-                        "ClinicalTrials.gov API returned non-JSON content "
-                        f"(type: {content_type}, status: {response.status_code}). "
-                        f"Response preview: {preview}"
-                    )
-                return response, base
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{base}: {exc}")
+            for method in methods:
+                try:
+                    headers = {
+                        "Accept": "application/json",
+                        "User-Agent": "neonatal-trials-py/1.0",
+                    }
+
+                    if method == "POST":
+                        response = http.post(
+                            base,
+                            json=json_payload,
+                            timeout=30,
+                            headers=headers,
+                        )
+                    else:
+                        response = http.get(
+                            base,
+                            params=params,
+                            timeout=30,
+                            headers=headers,
+                        )
+
+                    response.raise_for_status()
+                    content_type = response.headers.get("Content-Type", "")
+                    if "json" not in content_type.lower():
+                        preview = response.text[:200]
+                        raise ValueError(
+                            "ClinicalTrials.gov API returned non-JSON content "
+                            f"(type: {content_type}, status: {response.status_code}). "
+                            f"Response preview: {preview}"
+                        )
+                    return response, base
+                except Exception as exc:  # noqa: BLE001
+                    preview = ""
+                    if hasattr(exc, "response") and getattr(exc, "response") is not None:
+                        preview = getattr(exc.response, "text", "")[:200]
+                        status = exc.response.status_code
+                        errors.append(f"{base} ({method}): {exc} (status {status}). {preview}")
+                    else:
+                        errors.append(f"{base} ({method}): {exc}")
 
         details = "; ".join(errors)
         raise RuntimeError(
