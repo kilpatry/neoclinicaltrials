@@ -13,6 +13,14 @@ def test_parse_year_handles_common_formats():
     assert nt.ClinicalTrialsClient._parse_year(2010) == 2010
 
 
+def test_parse_age_to_days_covers_common_units():
+    assert nt.ClinicalTrialsClient._parse_age_to_days({"value": 4, "unit": "Weeks"}) == 28
+    assert nt.ClinicalTrialsClient._parse_age_to_days("28 Days") == 28
+    assert nt.ClinicalTrialsClient._parse_age_to_days("1 Month") == 30
+    assert nt.ClinicalTrialsClient._parse_age_to_days("1 Year") == 365
+    assert nt.ClinicalTrialsClient._parse_age_to_days("N/A") is None
+
+
 def test_extract_trial_record_prefers_requested_fields():
     client = nt.ClinicalTrialsClient()
     study = {
@@ -51,6 +59,42 @@ def test_extract_trial_record_prefers_requested_fields():
     assert set(record.conditions) == {"Condition A", "Condition B"}
     assert set(record.intervention_types) == {"Drug", "Procedure"}
     assert record.study_type == "Interventional"
+
+
+def test_is_neonatal_study_matches_keywords_and_age_filters():
+    client = nt.ClinicalTrialsClient()
+    study_with_keyword = {
+        "protocolSection": {
+            "conditionsModule": {"conditions": ["Neonatal sepsis"]},
+            "eligibilityModule": {"maximumAge": "2 Months"},
+        }
+    }
+
+    assert client._is_neonatal_study(
+        study_with_keyword,
+        condition_field=nt.DEFAULT_CONDITION_FIELD,
+        title_fields=nt.DEFAULT_TITLE_FIELDS,
+        min_age_field=nt.DEFAULT_MIN_AGE_FIELD,
+        max_age_field=nt.DEFAULT_MAX_AGE_FIELD,
+        keywords=nt.DEFAULT_NEONATAL_KEYWORDS,
+    )
+
+    adult_study = {
+        "protocolSection": {
+            "conditionsModule": {"conditions": ["Hypertension"]},
+            "identificationModule": {"briefTitle": "Adult blood pressure study"},
+            "eligibilityModule": {"minimumAge": "18 Years", "maximumAge": "65 Years"},
+        }
+    }
+
+    assert not client._is_neonatal_study(
+        adult_study,
+        condition_field=nt.DEFAULT_CONDITION_FIELD,
+        title_fields=nt.DEFAULT_TITLE_FIELDS,
+        min_age_field=nt.DEFAULT_MIN_AGE_FIELD,
+        max_age_field=nt.DEFAULT_MAX_AGE_FIELD,
+        keywords=nt.DEFAULT_NEONATAL_KEYWORDS,
+    )
 
 
 def test_summarize_and_rows_shape():

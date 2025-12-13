@@ -14,12 +14,29 @@ API_BASE_URLS <- c(
   "https://clinicaltrials.gov/data-api/api/studies",
   "https://clinicaltrials.gov/data-api/v2/studies"
 )
-DEFAULT_TERM <- "neonatal"
+DEFAULT_TERM <- "neonatal OR neonate OR newborn OR preterm OR premature infant"
+NEONATAL_KEYWORDS <- c(
+  "neonatal",
+  "neonate",
+  "newborn",
+  "nicu",
+  "preterm",
+  "premature",
+  "very low birth weight",
+  "infant"
+)
 DEFAULT_SPONSOR_FIELD <- "sponsorInfo.leadSponsorClass"
 DEFAULT_STATUS_FIELD <- "protocolSection.statusModule.overallStatus"
 DEFAULT_CONDITION_FIELD <- "protocolSection.conditionsModule.conditions"
 DEFAULT_INTERVENTION_FIELD <- "protocolSection.armsInterventionsModule.interventions"
 DEFAULT_STUDY_TYPE_FIELD <- "protocolSection.designModule.studyType"
+DEFAULT_TITLE_FIELDS <- c(
+  "protocolSection.identificationModule.briefTitle",
+  "protocolSection.identificationModule.officialTitle",
+  "protocolSection.descriptionModule.briefSummary"
+)
+DEFAULT_MIN_AGE_FIELD <- "protocolSection.eligibilityModule.minimumAge"
+DEFAULT_MAX_AGE_FIELD <- "protocolSection.eligibilityModule.maximumAge"
 DEFAULT_DATE_FIELDS <- c(
   # Common v2 start date locations
   "protocolSection.startModule.startDateStruct.date",
@@ -35,6 +52,7 @@ DEFAULT_DATE_FIELDS <- c(
   "protocolSection.firstPostDateStruct.firstPostDate"
 )
 DEFAULT_PAGE_SIZE <- 100
+MAX_NEONATAL_AGE_DAYS <- 90
 
 `%||%` <- function(lhs, rhs) {
   if (!is.null(lhs)) lhs else rhs
@@ -74,6 +92,71 @@ parse_year <- function(value) {
   }
 
   NA_integer_
+}
+
+parse_age_to_days <- function(value) {
+  if (is.null(value) || identical(value, NA) || length(value) == 0) return(NA_integer_)
+
+  if (is.list(value) && !is.null(value$value) && !is.null(value$unit)) {
+    return(age_to_days(value$value, value$unit))
+  }
+
+  text <- tolower(trimws(as.character(value)))
+  if (!nzchar(text) || text %in% c("n/a", "none")) return(NA_integer_)
+
+  parts <- strsplit(text, "\\s+")[[1]]
+  if (!length(parts)) return(NA_integer_)
+
+  number <- sub("\\+$", "", parts[[1]])
+  unit <- if (length(parts) > 1) parts[[2]] else "days"
+  age_to_days(number, unit)
+}
+
+age_to_days <- function(number_text, unit) {
+  number <- suppressWarnings(as.numeric(number_text))
+  if (is.na(number)) return(NA_integer_)
+
+  unit <- tolower(unit)
+  if (grepl("^day", unit)) return(as.integer(number))
+  if (grepl("^week", unit)) return(as.integer(number * 7))
+  if (grepl("^month", unit)) return(as.integer(number * 30.44))
+  if (grepl("^year", unit)) return(as.integer(number * 365))
+  NA_integer_
+}
+
+is_neonatal_study <- function(study,
+                              condition_field,
+                              title_fields,
+                              min_age_field,
+                              max_age_field,
+                              keywords = NEONATAL_KEYWORDS) {
+  keywords <- tolower(keywords)
+
+  text_candidates <- character()
+  conditions <- get_nested_field(study, condition_field) %||% list()
+  text_candidates <- c(text_candidates, tolower(as.character(unlist(conditions))))
+
+  for (field in title_fields) {
+    title <- get_nested_field(study, field)
+    if (!is.null(title)) {
+      text_candidates <- c(text_candidates, tolower(as.character(title)))
+    }
+  }
+
+  for (keyword in keywords) {
+    if (any(grepl(keyword, text_candidates, fixed = TRUE))) return(TRUE)
+  }
+
+  min_age_days <- parse_age_to_days(get_nested_field(study, min_age_field))
+  max_age_days <- parse_age_to_days(get_nested_field(study, max_age_field))
+
+  if (!is.na(max_age_days) && max_age_days <= MAX_NEONATAL_AGE_DAYS) return(TRUE)
+  if (!is.na(min_age_days) && min_age_days <= MAX_NEONATAL_AGE_DAYS &&
+      (is.na(max_age_days) || max_age_days <= MAX_NEONATAL_AGE_DAYS * 2)) {
+    return(TRUE)
+  }
+
+  FALSE
 }
 
 extract_trial_record <- function(study,
@@ -133,16 +216,21 @@ fetch_trials <- function(term = DEFAULT_TERM,
                          intervention_field = DEFAULT_INTERVENTION_FIELD,
                          study_type_field = DEFAULT_STUDY_TYPE_FIELD,
                          date_fields = DEFAULT_DATE_FIELDS,
+                         title_fields = DEFAULT_TITLE_FIELDS,
+                         min_age_field = DEFAULT_MIN_AGE_FIELD,
+                         max_age_field = DEFAULT_MAX_AGE_FIELD,
                          base_urls = API_BASE_URLS,
                          page_size = DEFAULT_PAGE_SIZE,
-                         max_pages = 30) {
+                         max_pages = 30,
+                         keywords = NEONATAL_KEYWORDS) {
   requireNamespace("httr", quietly = TRUE)
   requireNamespace("jsonlite", quietly = TRUE)
 
   params <- list(
     "query.term" = term,
     fields = paste(c(date_fields, sponsor_field, status_field, condition_field,
-                     intervention_field, study_type_field), collapse = ","),
+                     intervention_field, study_type_field, title_fields,
+                     min_age_field, max_age_field), collapse = ","),
     pageSize = page_size,
     format = "json"
   )
@@ -250,7 +338,20 @@ fetch_trials <- function(term = DEFAULT_TERM,
     }
 
     studies <- parsed$studies %||% parsed$results %||% list()
-    records <- c(records, lapply(studies, extract_trial_record,
+    keepers <- list()
+    for (study in studies) {
+      if (!is_neonatal_study(study,
+                             condition_field = condition_field,
+                             title_fields = title_fields,
+                             min_age_field = min_age_field,
+                             max_age_field = max_age_field,
+                             keywords = keywords)) {
+        next
+      }
+      keepers[[length(keepers) + 1]] <- study
+    }
+
+    records <- c(records, lapply(keepers, extract_trial_record,
                                  sponsor_field = sponsor_field,
                                  status_field = status_field,
                                  condition_field = condition_field,

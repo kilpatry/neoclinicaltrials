@@ -26,12 +26,29 @@ API_BASE_URLS = [
     "https://clinicaltrials.gov/data-api/api/studies",
     "https://clinicaltrials.gov/data-api/v2/studies",
 ]
-DEFAULT_TERM = "neonatal"
+DEFAULT_TERM = "neonatal OR neonate OR newborn OR preterm OR premature infant"
+DEFAULT_NEONATAL_KEYWORDS = (
+    "neonatal",
+    "neonate",
+    "newborn",
+    "nicu",
+    "preterm",
+    "premature",
+    "very low birth weight",
+    "infant",
+)
 DEFAULT_SPONSOR_FIELD = "sponsorInfo.leadSponsorClass"
 DEFAULT_STATUS_FIELD = "protocolSection.statusModule.overallStatus"
 DEFAULT_CONDITION_FIELD = "protocolSection.conditionsModule.conditions"
 DEFAULT_INTERVENTION_FIELD = "protocolSection.armsInterventionsModule.interventions"
 DEFAULT_STUDY_TYPE_FIELD = "protocolSection.designModule.studyType"
+DEFAULT_TITLE_FIELDS = (
+    "protocolSection.identificationModule.briefTitle",
+    "protocolSection.identificationModule.officialTitle",
+    "protocolSection.descriptionModule.briefSummary",
+)
+DEFAULT_MIN_AGE_FIELD = "protocolSection.eligibilityModule.minimumAge"
+DEFAULT_MAX_AGE_FIELD = "protocolSection.eligibilityModule.maximumAge"
 DEFAULT_DATE_FIELDS = (
     # Common v2 start date locations
     "protocolSection.startModule.startDateStruct.date",
@@ -46,6 +63,7 @@ DEFAULT_DATE_FIELDS = (
     "protocolSection.statusModule.studyFirstPostDateStruct.studyFirstPostDate",
     "protocolSection.firstPostDateStruct.firstPostDate",
 )
+MAX_NEONATAL_AGE_DAYS = 90
 DEFAULT_PAGE_SIZE = 100
 
 
@@ -83,6 +101,10 @@ class ClinicalTrialsClient:
         date_fields: Iterable[str] = DEFAULT_DATE_FIELDS,
         page_size: int = DEFAULT_PAGE_SIZE,
         max_pages: int = 30,
+        title_fields: Iterable[str] = DEFAULT_TITLE_FIELDS,
+        min_age_field: str = DEFAULT_MIN_AGE_FIELD,
+        max_age_field: str = DEFAULT_MAX_AGE_FIELD,
+        neonatal_keywords: Iterable[str] = DEFAULT_NEONATAL_KEYWORDS,
     ) -> List[TrialRecord]:
         """Fetch trials matching the term and return simplified records."""
 
@@ -100,6 +122,9 @@ class ClinicalTrialsClient:
                     condition_field,
                     intervention_field,
                     study_type_field,
+                    *title_fields,
+                    min_age_field,
+                    max_age_field,
                 ]
             ),
             "pageSize": page_size,
@@ -130,6 +155,16 @@ class ClinicalTrialsClient:
 
             studies = payload.get("studies") or payload.get("results") or []
             for study in studies:
+                if not self._is_neonatal_study(
+                    study,
+                    condition_field=condition_field,
+                    title_fields=title_fields,
+                    min_age_field=min_age_field,
+                    max_age_field=max_age_field,
+                    keywords=neonatal_keywords,
+                ):
+                    continue
+
                 records.append(
                     self._extract_trial_record(
                         study,
@@ -293,6 +328,82 @@ class ClinicalTrialsClient:
             if token.isdigit() and len(token) == 4:
                 return int(token)
         return None
+
+    @staticmethod
+    def _parse_age_to_days(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            number = value.get("value")
+            unit = value.get("unit")
+            if number is None or unit is None:
+                return None
+            return ClinicalTrialsClient._age_to_days(str(number), str(unit))
+
+        text = str(value).strip().lower()
+        if not text or text in {"n/a", "none"}:
+            return None
+
+        parts = text.split()
+        if not parts:
+            return None
+        number = parts[0].rstrip("+")
+        unit = parts[1] if len(parts) > 1 else "days"
+        return ClinicalTrialsClient._age_to_days(number, unit)
+
+    @staticmethod
+    def _age_to_days(number_text: str, unit: str) -> Optional[int]:
+        try:
+            number = float(number_text)
+        except ValueError:
+            return None
+
+        unit = unit.lower()
+        if unit.startswith("day"):
+            return int(number)
+        if unit.startswith("week"):
+            return int(number * 7)
+        if unit.startswith("month"):
+            return int(number * 30.44)
+        if unit.startswith("year"):
+            return int(number * 365)
+        return None
+
+    def _is_neonatal_study(
+        self,
+        study: Dict[str, Any],
+        *,
+        condition_field: str,
+        title_fields: Iterable[str],
+        min_age_field: str,
+        max_age_field: str,
+        keywords: Iterable[str],
+    ) -> bool:
+        keywords_lc = [k.lower() for k in keywords]
+
+        text_candidates: List[str] = []
+        conditions = self._normalize_to_list(self._get_nested_field(study, condition_field) or [])
+        text_candidates.extend([str(c).lower() for c in conditions])
+
+        for field in title_fields:
+            title = self._get_nested_field(study, field)
+            if title:
+                text_candidates.append(str(title).lower())
+
+        if any(any(keyword in text for keyword in keywords_lc) for text in text_candidates):
+            return True
+
+        min_age_days = self._parse_age_to_days(self._get_nested_field(study, min_age_field))
+        max_age_days = self._parse_age_to_days(self._get_nested_field(study, max_age_field))
+
+        if max_age_days is not None and max_age_days <= MAX_NEONATAL_AGE_DAYS:
+            return True
+        if min_age_days is not None and min_age_days <= MAX_NEONATAL_AGE_DAYS and (
+            max_age_days is None or max_age_days <= MAX_NEONATAL_AGE_DAYS * 2
+        ):
+            return True
+
+        return False
 
     @staticmethod
     def _get_nested_field(data: Dict[str, Any], dotted_path: str) -> Any:

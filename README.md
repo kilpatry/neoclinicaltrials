@@ -5,11 +5,14 @@ trials reported on ClinicalTrials.gov with yearly counts that factor in lead
 sponsor type, overall status, conditions, intervention types, and study type
 intervention/observational. It queries the ClinicalTrials.gov Data API and
 aggregates results into a tidy summary table that can be exported as JSON or
-CSV.
+CSV. Trials are filtered client-side to stay neonatal-focused using a broader
+set of search terms (neonate, newborn, preterm, etc.), study titles, condition
+keywords, and age eligibility (preferring maximum age ≤ 90 days).
 
 ## Features
 
-- Fetch neonatal-focused trials (default search term `neonatal`) from the
+- Fetch neonatal-focused trials (default search expression
+  `neonatal OR neonate OR newborn OR preterm OR premature infant`) from the
   ClinicalTrials.gov Data API.
 - Aggregate trials by start year (or first posted year), lead sponsor class,
   overall status, conditions, intervention types (Drug, Procedure, etc.), and
@@ -108,14 +111,19 @@ or pagination tokens, adjust the constants at the top of
 `neonatal_trials.py`. The defaults assume the following field paths exist
 in the API response:
 
-- `protocolSection.startDateStruct.startDate` (or
-  `protocolSection.startDateStruct.date`)
-- `protocolSection.firstPostDateStruct.firstPostDate`
+- `protocolSection.startModule.startDateStruct.date` (with fallbacks to
+  `protocolSection.startDateStruct.startDate` and related fields)
+- `protocolSection.statusModule.studyFirstPostDateStruct.date` (and legacy
+  `protocolSection.firstPostDateStruct.firstPostDate`)
 - `sponsorInfo.leadSponsorClass`
 - `protocolSection.statusModule.overallStatus`
 - `protocolSection.conditionsModule.conditions`
 - `protocolSection.armsInterventionsModule.interventions`
 - `protocolSection.designModule.studyType`
+- `protocolSection.identificationModule.briefTitle` (for neonatal keyword
+  filtering)
+- `protocolSection.eligibilityModule.minimumAge` / `.maximumAge` (for neonatal
+  age filtering)
 
 The tool will fall back to alternate fields if these are missing.
 
