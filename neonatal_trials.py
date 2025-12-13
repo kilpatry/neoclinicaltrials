@@ -33,9 +33,17 @@ DEFAULT_CONDITION_FIELD = "protocolSection.conditionsModule.conditions"
 DEFAULT_INTERVENTION_FIELD = "protocolSection.armsInterventionsModule.interventions"
 DEFAULT_STUDY_TYPE_FIELD = "protocolSection.designModule.studyType"
 DEFAULT_DATE_FIELDS = (
+    # Common v2 start date locations
+    "protocolSection.startModule.startDateStruct.date",
+    "protocolSection.startModule.startDateStruct.startDate",
+    "protocolSection.startModule.startDateStruct.startDateDay",
+    # Historic or alternative placements kept for compatibility
     "protocolSection.startDateStruct.startDate",
     "protocolSection.startDateStruct.date",
     "protocolSection.startDateStruct.startDateDay",
+    # Posted/first-post fallbacks
+    "protocolSection.statusModule.studyFirstPostDateStruct.date",
+    "protocolSection.statusModule.studyFirstPostDateStruct.studyFirstPostDate",
     "protocolSection.firstPostDateStruct.firstPostDate",
 )
 DEFAULT_PAGE_SIZE = 100
