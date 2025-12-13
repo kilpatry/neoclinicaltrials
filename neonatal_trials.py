@@ -103,7 +103,7 @@ class ClinicalTrialsClient:
         study_type_field: str = DEFAULT_STUDY_TYPE_FIELD,
         date_fields: Iterable[str] = DEFAULT_DATE_FIELDS,
         page_size: int = DEFAULT_PAGE_SIZE,
-        max_pages: int = 30,
+        max_pages: Optional[int] = None,
         title_fields: Iterable[str] = DEFAULT_TITLE_FIELDS,
         nct_field: str = DEFAULT_NCT_FIELD,
         min_age_field: str = DEFAULT_MIN_AGE_FIELD,
@@ -119,6 +119,7 @@ class ClinicalTrialsClient:
 
         params: Dict[str, Any] = {
             "query.term": term,
+            "query.expr": term,
             "fields": ",".join(
                 [
                     *date_fields,
@@ -141,7 +142,8 @@ class ClinicalTrialsClient:
         seen_ids: set[str] = set()
         page_token: Optional[str] = None
 
-        for _ in range(max_pages):
+        pages_fetched = 0
+        while True:
             paged_params = dict(params)
             if page_token:
                 paged_params["pageToken"] = page_token
@@ -194,7 +196,10 @@ class ClinicalTrialsClient:
                 records.append(record)
 
             page_token = payload.get("nextPageToken") or payload.get("next_page_token")
+            pages_fetched += 1
             if not page_token:
+                break
+            if max_pages is not None and pages_fetched >= max_pages:
                 break
 
         return records
@@ -220,10 +225,10 @@ class ClinicalTrialsClient:
                 }
 
                 if "/api/v2/" in base:
-                    term = params.get("query.term")
+                    term = params.get("query.expr") or params.get("query.term")
                     fields_param = params.get("fields", "")
                     payload: Dict[str, Any] = {
-                        "query": {"term": term} if term else {},
+                        "query": {"expr": term} if term else {},
                         "fields": [f for f in fields_param.split(",") if f],
                         "pageSize": params.get("pageSize"),
                     }
@@ -431,12 +436,17 @@ class ClinicalTrialsClient:
 
         if max_age_days is not None and max_age_days <= MAX_NEONATAL_AGE_DAYS:
             return True
-        if min_age_days is not None and min_age_days <= MAX_NEONATAL_AGE_DAYS and (
-            max_age_days is None or max_age_days <= MAX_NEONATAL_AGE_DAYS * 2
-        ):
+        if min_age_days is not None and min_age_days <= MAX_NEONATAL_AGE_DAYS:
             return True
 
-        return False
+        if min_age_days is not None and min_age_days > MAX_NEONATAL_AGE_DAYS * 4:
+            return False
+        if max_age_days is not None and max_age_days > MAX_NEONATAL_AGE_DAYS * 12 and (
+            min_age_days is None or min_age_days > MAX_NEONATAL_AGE_DAYS * 2
+        ):
+            return False
+
+        return True
 
     @staticmethod
     def _get_nested_field(data: Dict[str, Any], dotted_path: str) -> Any:
@@ -609,7 +619,12 @@ def parse_args() -> argparse.Namespace:
         help="Return individual trial rows (records) or aggregated counts (summary)",
     )
     parser.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE, help="Page size for API pagination")
-    parser.add_argument("--max-pages", type=int, default=30, help="Maximum number of pages to fetch")
+    parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=0,
+        help="Maximum number of pages to fetch (0 = fetch all pages until exhausted)",
+    )
     parser.add_argument(
         "--no-filter",
         action="store_true",
@@ -634,7 +649,7 @@ def main() -> None:
         term=args.term,
         sponsor_field=args.sponsor_field,
         page_size=args.page_size,
-        max_pages=args.max_pages,
+        max_pages=args.max_pages or None,
         apply_filter=not args.no_filter,
     )
 

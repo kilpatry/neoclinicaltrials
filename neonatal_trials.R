@@ -152,12 +152,15 @@ is_neonatal_study <- function(study,
   max_age_days <- parse_age_to_days(get_nested_field(study, max_age_field))
 
   if (!is.na(max_age_days) && max_age_days <= MAX_NEONATAL_AGE_DAYS) return(TRUE)
-  if (!is.na(min_age_days) && min_age_days <= MAX_NEONATAL_AGE_DAYS &&
-      (is.na(max_age_days) || max_age_days <= MAX_NEONATAL_AGE_DAYS * 2)) {
-    return(TRUE)
+  if (!is.na(min_age_days) && min_age_days <= MAX_NEONATAL_AGE_DAYS) return(TRUE)
+
+  if (!is.na(min_age_days) && min_age_days > MAX_NEONATAL_AGE_DAYS * 4) return(FALSE)
+  if (!is.na(max_age_days) && max_age_days > MAX_NEONATAL_AGE_DAYS * 12 &&
+      (is.na(min_age_days) || min_age_days > MAX_NEONATAL_AGE_DAYS * 2)) {
+    return(FALSE)
   }
 
-  FALSE
+  TRUE
 }
 
 extract_trial_record <- function(study,
@@ -240,7 +243,7 @@ fetch_trials <- function(term = DEFAULT_TERM,
                          max_age_field = DEFAULT_MAX_AGE_FIELD,
                          base_urls = API_BASE_URLS,
                          page_size = DEFAULT_PAGE_SIZE,
-                         max_pages = 30,
+                         max_pages = NULL,
                          keywords = NEONATAL_KEYWORDS,
                          apply_filter = TRUE) {
   requireNamespace("httr", quietly = TRUE)
@@ -248,6 +251,7 @@ fetch_trials <- function(term = DEFAULT_TERM,
 
   params <- list(
     "query.term" = term,
+    "query.expr" = term,
     fields = paste(c(date_fields, sponsor_field, status_field, condition_field,
                      intervention_field, study_type_field, nct_field, title_fields,
                      min_age_field, max_age_field), collapse = ","),
@@ -262,7 +266,8 @@ fetch_trials <- function(term = DEFAULT_TERM,
   active_base <- NULL
   errors <- character()
 
-  for (i in seq_len(max_pages)) {
+  page_counter <- 0
+  repeat {
     paged_params <- params
     if (!is.null(page_token)) {
       paged_params$pageToken <- page_token
@@ -283,7 +288,8 @@ fetch_trials <- function(term = DEFAULT_TERM,
         if (is_v2) {
           fields_param <- strsplit(paged_params$fields, ",")[[1]]
           body <- list(
-            query = if (!is.null(paged_params[["query.term"]])) list(term = paged_params[["query.term"]]) else list(),
+            query = if (!is.null(paged_params[["query.expr"]])) list(expr = paged_params[["query.expr"]])
+              else if (!is.null(paged_params[["query.term"]])) list(expr = paged_params[["query.term"]]) else list(),
             fields = fields_param[nzchar(fields_param)],
             pageSize = paged_params$pageSize
           )
@@ -339,8 +345,8 @@ fetch_trials <- function(term = DEFAULT_TERM,
         resp <- attempt$resp
         parsed <- attempt$parsed
         active_base <- base
-        break
-      }
+      break
+    }
     }
 
     if (is.null(resp) || is.null(parsed)) {
@@ -395,6 +401,8 @@ fetch_trials <- function(term = DEFAULT_TERM,
 
     page_token <- parsed$nextPageToken %||% parsed$next_page_token
     if (is.null(page_token)) break
+    page_counter <- page_counter + 1
+    if (!is.null(max_pages) && page_counter >= max_pages) break
   }
 
   records
@@ -482,7 +490,7 @@ summarize_neonatal_trials <- function(term = DEFAULT_TERM,
                                       end_year = NULL,
                                       base_urls = API_BASE_URLS,
                                       page_size = DEFAULT_PAGE_SIZE,
-                                      max_pages = 30,
+                                      max_pages = NULL,
                                       strict_filter = TRUE,
                                       mode = c("records", "summary"),
                                       output = c("data.frame", "csv"),
@@ -526,6 +534,7 @@ if (identical(environmentName(environment()), "R_GlobalEnv") && !interactive()) 
   base_urls <- API_BASE_URLS
   strict_filter <- TRUE
   mode <- "records"
+  max_pages <- NULL
 
   parse_arg <- function(flag) {
     idx <- which(args == flag)
@@ -537,6 +546,11 @@ if (identical(environmentName(environment()), "R_GlobalEnv") && !interactive()) 
   base_urls_arg <- parse_arg("--base-url")
   if (!is.null(base_urls_arg)) {
     base_urls <- strsplit(base_urls_arg, ",")[[1]]
+  }
+  max_pages_arg <- parse_arg("--max-pages")
+  if (!is.null(max_pages_arg)) {
+    max_pages_val <- suppressWarnings(as.integer(max_pages_arg))
+    if (!is.na(max_pages_val) && max_pages_val > 0) max_pages <- max_pages_val
   }
   start_year <- as.integer(parse_arg("--start-year"))
   end_year <- as.integer(parse_arg("--end-year"))
@@ -553,6 +567,7 @@ if (identical(environmentName(environment()), "R_GlobalEnv") && !interactive()) 
     start_year = start_year,
     end_year = end_year,
     base_urls = base_urls,
+    max_pages = max_pages,
     strict_filter = strict_filter,
     mode = mode,
     output = output,

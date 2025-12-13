@@ -104,6 +104,37 @@ def test_is_neonatal_study_matches_keywords_and_age_filters():
     )
 
 
+def test_is_neonatal_study_allows_when_no_signal_but_rejects_clear_adults():
+    client = nt.ClinicalTrialsClient()
+
+    missing_fields = {"protocolSection": {"identificationModule": {"briefTitle": "Untitled"}}}
+    assert client._is_neonatal_study(
+        missing_fields,
+        condition_field=nt.DEFAULT_CONDITION_FIELD,
+        title_fields=nt.DEFAULT_TITLE_FIELDS,
+        min_age_field=nt.DEFAULT_MIN_AGE_FIELD,
+        max_age_field=nt.DEFAULT_MAX_AGE_FIELD,
+        keywords=nt.DEFAULT_NEONATAL_KEYWORDS,
+    )
+
+    geriatric = {
+        "protocolSection": {
+            "eligibilityModule": {
+                "minimumAge": "65 Years",
+                "maximumAge": "99 Years",
+            }
+        }
+    }
+    assert not client._is_neonatal_study(
+        geriatric,
+        condition_field=nt.DEFAULT_CONDITION_FIELD,
+        title_fields=nt.DEFAULT_TITLE_FIELDS,
+        min_age_field=nt.DEFAULT_MIN_AGE_FIELD,
+        max_age_field=nt.DEFAULT_MAX_AGE_FIELD,
+        keywords=nt.DEFAULT_NEONATAL_KEYWORDS,
+    )
+
+
 def test_summarize_and_rows_shape():
     records = [
         nt.TrialRecord(
