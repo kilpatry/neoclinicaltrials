@@ -7,10 +7,7 @@ intervention/observational. It queries the ClinicalTrials.gov Data API and
 aggregates results into a tidy summary table that can be exported as JSON or
 CSV. Trials are filtered client-side to stay neonatal-focused using a broader
 set of search terms (neonate, newborn, preterm, etc.), study titles, condition
-keywords, and age eligibility (preferring maximum age ≤ 90 days). Client-side
-filtering is now optional (disabled by default) so you can retrieve the full
-set of matching studies when running into overly restrictive results; use the
-`--strict-filter` flag (or `strict_filter = TRUE` in R) to re-enable it.
+keywords, and age eligibility (preferring maximum age ≤ 90 days).
 
 ## Features
 
@@ -18,9 +15,8 @@ set of matching studies when running into overly restrictive results; use the
   `neonatal OR neonate OR newborn OR preterm OR premature infant`) from the
   ClinicalTrials.gov Data API.
 - Aggregate trials by start year (or first posted year), lead sponsor class,
-  overall status, conditions, intervention types (Drug, Procedure, etc.),
-  study type (Interventional vs. Observational), and include NCT IDs and
-  study titles alongside the grouped counts.
+  overall status, conditions, intervention types (Drug, Procedure, etc.), and
+  study type (Interventional vs. Observational).
 - Export the aggregated counts as CSV or JSON for further analysis or
   visualization.
 
@@ -84,8 +80,6 @@ Key options:
 - `--output csv|json`: format of the summary output (printed to stdout).
 - `--max-pages`: safety bound on how many pages to pull from the API
   (defaults to 30).
-- `--strict-filter`: enable client-side keyword/age neonatal filtering (off by
-  default to avoid dropping valid results).
 
 Example fetching studies first posted since 2010 and printing JSON:
 
@@ -107,8 +101,6 @@ The output table includes these columns:
 - `study_type`: Interventional, Observational, etc.
 - `intervention_type`: intervention category for the record (one row per type)
 - `conditions`: semicolon-delimited condition list for the grouped row
-- `nct_ids`: NCT identifiers represented in the grouped bucket
-- `titles`: Study titles represented in the grouped bucket
 - `count`: number of studies matching the combination
 
 ### API Notes
@@ -128,7 +120,6 @@ in the API response:
 - `protocolSection.conditionsModule.conditions`
 - `protocolSection.armsInterventionsModule.interventions`
 - `protocolSection.designModule.studyType`
-- `protocolSection.identificationModule.nctId`
 - `protocolSection.identificationModule.briefTitle` (for neonatal keyword
   filtering)
 - `protocolSection.eligibilityModule.minimumAge` / `.maximumAge` (for neonatal

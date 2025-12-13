@@ -42,7 +42,6 @@ DEFAULT_STATUS_FIELD = "protocolSection.statusModule.overallStatus"
 DEFAULT_CONDITION_FIELD = "protocolSection.conditionsModule.conditions"
 DEFAULT_INTERVENTION_FIELD = "protocolSection.armsInterventionsModule.interventions"
 DEFAULT_STUDY_TYPE_FIELD = "protocolSection.designModule.studyType"
-DEFAULT_NCT_FIELD = "protocolSection.identificationModule.nctId"
 DEFAULT_TITLE_FIELDS = (
     "protocolSection.identificationModule.briefTitle",
     "protocolSection.identificationModule.officialTitle",
@@ -70,8 +69,6 @@ DEFAULT_PAGE_SIZE = 100
 
 @dataclass
 class TrialRecord:
-    nct_id: str
-    title: str
     year: Optional[int]
     sponsor_class: str
     status: str
@@ -105,11 +102,9 @@ class ClinicalTrialsClient:
         page_size: int = DEFAULT_PAGE_SIZE,
         max_pages: int = 30,
         title_fields: Iterable[str] = DEFAULT_TITLE_FIELDS,
-        nct_field: str = DEFAULT_NCT_FIELD,
         min_age_field: str = DEFAULT_MIN_AGE_FIELD,
         max_age_field: str = DEFAULT_MAX_AGE_FIELD,
         neonatal_keywords: Iterable[str] = DEFAULT_NEONATAL_KEYWORDS,
-        apply_filter: bool = False,
     ) -> List[TrialRecord]:
         """Fetch trials matching the term and return simplified records."""
 
@@ -127,7 +122,6 @@ class ClinicalTrialsClient:
                     condition_field,
                     intervention_field,
                     study_type_field,
-                    nct_field,
                     *title_fields,
                     min_age_field,
                     max_age_field,
@@ -161,22 +155,19 @@ class ClinicalTrialsClient:
 
             studies = payload.get("studies") or payload.get("results") or []
             for study in studies:
-                if apply_filter:
-                    if not self._is_neonatal_study(
-                        study,
-                        condition_field=condition_field,
-                        title_fields=title_fields,
-                        min_age_field=min_age_field,
-                        max_age_field=max_age_field,
-                        keywords=neonatal_keywords,
-                    ):
-                        continue
+                if not self._is_neonatal_study(
+                    study,
+                    condition_field=condition_field,
+                    title_fields=title_fields,
+                    min_age_field=min_age_field,
+                    max_age_field=max_age_field,
+                    keywords=neonatal_keywords,
+                ):
+                    continue
 
                 records.append(
                     self._extract_trial_record(
                         study,
-                        nct_field=nct_field,
-                        title_fields=title_fields,
                         sponsor_field=sponsor_field,
                         status_field=status_field,
                         condition_field=condition_field,
@@ -259,8 +250,6 @@ class ClinicalTrialsClient:
     def _extract_trial_record(
         self,
         study: Dict[str, Any],
-        nct_field: str,
-        title_fields: Iterable[str],
         sponsor_field: str,
         status_field: str,
         condition_field: str,
@@ -268,19 +257,6 @@ class ClinicalTrialsClient:
         study_type_field: str,
         date_fields: Iterable[str],
     ) -> TrialRecord:
-        nct_id = str(
-            self._get_nested_field(study, nct_field)
-            or self._get_nested_field(study, "protocolSection.identificationModule.nctId")
-            or self._get_nested_field(study, "protocolSection.identificationModule.nctIdNumber")
-            or "Unknown"
-        )
-
-        title_value = None
-        for field in title_fields:
-            title_value = self._get_nested_field(study, field)
-            if title_value:
-                break
-
         sponsor_class = (
             self._get_nested_field(study, sponsor_field)
             or self._get_nested_field(study, "sponsorInfo.leadSponsorClass")
@@ -325,8 +301,6 @@ class ClinicalTrialsClient:
                     break
 
         return TrialRecord(
-            nct_id=nct_id,
-            title=str(title_value or ""),
             year=year_value,
             sponsor_class=str(sponsor_class),
             status=str(status),
@@ -452,12 +426,10 @@ class ClinicalTrialsClient:
 
 def summarize_trials(
     records: Iterable[TrialRecord], start_year: Optional[int] = None, end_year: Optional[int] = None
-) -> Dict[tuple, Dict[str, Any]]:
+) -> Dict[tuple, int]:
     """Aggregate trials by year, sponsor, status, intervention type, and study type."""
 
-    summary: Dict[tuple, Dict[str, Any]] = defaultdict(
-        lambda: {"count": 0, "nct_ids": set(), "titles": set()}
-    )
+    summary: Dict[tuple, int] = defaultdict(int)
 
     for record in records:
         if record.year is None:
@@ -479,17 +451,14 @@ def summarize_trials(
                 intervention_type,
                 conditions_key,
             )
-            summary[key]["count"] += 1
-            summary[key]["nct_ids"].add(record.nct_id)
-            if record.title:
-                summary[key]["titles"].add(record.title)
+            summary[key] += 1
 
     return summary
 
 
-def summary_to_rows(summary: Dict[tuple, Dict[str, Any]]) -> List[Dict[str, Any]]:
+def summary_to_rows(summary: Dict[tuple, int]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
-    for key, payload in summary.items():
+    for key, count in summary.items():
         year, sponsor, status, study_type, intervention_type, conditions = key
         rows.append(
             {
@@ -499,9 +468,7 @@ def summary_to_rows(summary: Dict[tuple, Dict[str, Any]]) -> List[Dict[str, Any]
                 "study_type": study_type,
                 "intervention_type": intervention_type,
                 "conditions": conditions,
-                "nct_ids": "; ".join(sorted(payload["nct_ids"])) if payload["nct_ids"] else "",
-                "titles": "; ".join(sorted(payload["titles"])) if payload["titles"] else "",
-                "count": payload["count"],
+                "count": count,
             }
         )
 
@@ -556,13 +523,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE, help="Page size for API pagination")
     parser.add_argument("--max-pages", type=int, default=30, help="Maximum number of pages to fetch")
     parser.add_argument(
-        "--strict-filter",
-        action="store_true",
-        help=(
-            "Apply client-side neonatal filtering (keywords + age). Disabled by default to avoid dropping valid studies."
-        ),
-    )
-    parser.add_argument(
         "--base-url",
         action="append",
         help=(
@@ -580,7 +540,6 @@ def main() -> None:
         sponsor_field=args.sponsor_field,
         page_size=args.page_size,
         max_pages=args.max_pages,
-        apply_filter=args.strict_filter,
     )
 
     summary = summarize_trials(records, start_year=args.start_year, end_year=args.end_year)

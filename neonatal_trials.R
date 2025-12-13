@@ -30,7 +30,6 @@ DEFAULT_STATUS_FIELD <- "protocolSection.statusModule.overallStatus"
 DEFAULT_CONDITION_FIELD <- "protocolSection.conditionsModule.conditions"
 DEFAULT_INTERVENTION_FIELD <- "protocolSection.armsInterventionsModule.interventions"
 DEFAULT_STUDY_TYPE_FIELD <- "protocolSection.designModule.studyType"
-DEFAULT_NCT_FIELD <- "protocolSection.identificationModule.nctId"
 DEFAULT_TITLE_FIELDS <- c(
   "protocolSection.identificationModule.briefTitle",
   "protocolSection.identificationModule.officialTitle",
@@ -163,25 +162,10 @@ is_neonatal_study <- function(study,
 extract_trial_record <- function(study,
                                 sponsor_field,
                                 status_field,
-                                nct_field,
-                                title_fields,
                                 condition_field,
                                 intervention_field,
                                 study_type_field,
                                 date_fields) {
-  nct_id <- get_nested_field(study, nct_field) %||%
-    get_nested_field(study, "protocolSection.identificationModule.nctId") %||%
-    get_nested_field(study, "protocolSection.identificationModule.nctIdNumber") %||% "Unknown"
-
-  title_value <- NULL
-  for (field in title_fields) {
-    candidate <- get_nested_field(study, field)
-    if (!is.null(candidate)) {
-      title_value <- candidate
-      break
-    }
-  }
-
   sponsor_class <- get_nested_field(study, sponsor_field) %||%
     get_nested_field(study, "sponsorInfo.leadSponsorClass") %||%
     get_nested_field(study, "sponsors.lead_sponsor_class") %||% "Unknown"
@@ -216,8 +200,6 @@ extract_trial_record <- function(study,
   }
 
   list(
-    nct_id = as.character(nct_id),
-    title = as.character(title_value %||% ""),
     year = year_value,
     sponsor_class = as.character(sponsor_class),
     status = as.character(status),
@@ -235,21 +217,19 @@ fetch_trials <- function(term = DEFAULT_TERM,
                          study_type_field = DEFAULT_STUDY_TYPE_FIELD,
                          date_fields = DEFAULT_DATE_FIELDS,
                          title_fields = DEFAULT_TITLE_FIELDS,
-                         nct_field = DEFAULT_NCT_FIELD,
                          min_age_field = DEFAULT_MIN_AGE_FIELD,
                          max_age_field = DEFAULT_MAX_AGE_FIELD,
                          base_urls = API_BASE_URLS,
                          page_size = DEFAULT_PAGE_SIZE,
                          max_pages = 30,
-                         keywords = NEONATAL_KEYWORDS,
-                         apply_filter = FALSE) {
+                         keywords = NEONATAL_KEYWORDS) {
   requireNamespace("httr", quietly = TRUE)
   requireNamespace("jsonlite", quietly = TRUE)
 
   params <- list(
     "query.term" = term,
     fields = paste(c(date_fields, sponsor_field, status_field, condition_field,
-                     intervention_field, study_type_field, nct_field, title_fields,
+                     intervention_field, study_type_field, title_fields,
                      min_age_field, max_age_field), collapse = ","),
     pageSize = page_size,
     format = "json"
@@ -360,15 +340,13 @@ fetch_trials <- function(term = DEFAULT_TERM,
     studies <- parsed$studies %||% parsed$results %||% list()
     keepers <- list()
     for (study in studies) {
-      if (isTRUE(apply_filter)) {
-        if (!is_neonatal_study(study,
-                               condition_field = condition_field,
-                               title_fields = title_fields,
-                               min_age_field = min_age_field,
-                               max_age_field = max_age_field,
-                               keywords = keywords)) {
-          next
-        }
+      if (!is_neonatal_study(study,
+                             condition_field = condition_field,
+                             title_fields = title_fields,
+                             min_age_field = min_age_field,
+                             max_age_field = max_age_field,
+                             keywords = keywords)) {
+        next
       }
       keepers[[length(keepers) + 1]] <- study
     }
@@ -376,8 +354,6 @@ fetch_trials <- function(term = DEFAULT_TERM,
     records <- c(records, lapply(keepers, extract_trial_record,
                                  sponsor_field = sponsor_field,
                                  status_field = status_field,
-                                 nct_field = nct_field,
-                                 title_fields = title_fields,
                                  condition_field = condition_field,
                                  intervention_field = intervention_field,
                                  study_type_field = study_type_field,
@@ -405,8 +381,6 @@ summarize_trials <- function(records, start_year = NULL, end_year = NULL) {
 
     for (intervention in intervention_types) {
       rows[[length(rows) + 1]] <- data.frame(
-        nct_id = rec$nct_id,
-        title = rec$title,
         year = as.integer(rec$year),
         sponsor_class = rec$sponsor_class,
         status = rec$status,
@@ -423,15 +397,11 @@ summarize_trials <- function(records, start_year = NULL, end_year = NULL) {
   if (!length(rows)) return(data.frame())
 
   df <- do.call(rbind, rows)
-  keys <- c("year", "sponsor_class", "status", "study_type", "intervention_type", "conditions")
-
-  counts <- aggregate(count ~ ., data = df[, c(keys, "count")], FUN = sum)
-  nct_ids <- aggregate(nct_id ~ ., data = df[, c(keys, "nct_id")],
-                       FUN = function(x) paste(sort(unique(x)), collapse = "; "))
-  titles <- aggregate(title ~ ., data = df[, c(keys, "title")],
-                      FUN = function(x) paste(sort(unique(x[nzchar(x)])), collapse = "; "))
-
-  Reduce(function(x, y) merge(x, y, by = keys, sort = TRUE), list(counts, nct_ids, titles))
+  aggregate(
+    count ~ year + sponsor_class + status + study_type + intervention_type + conditions,
+    data = df,
+    FUN = sum
+  )
 }
 
 summarize_neonatal_trials <- function(term = DEFAULT_TERM,
@@ -445,7 +415,6 @@ summarize_neonatal_trials <- function(term = DEFAULT_TERM,
                                       base_urls = API_BASE_URLS,
                                       page_size = DEFAULT_PAGE_SIZE,
                                       max_pages = 30,
-                                      strict_filter = FALSE,
                                       output = c("data.frame", "csv"),
                                       file = "") {
   output <- match.arg(output)
@@ -458,8 +427,7 @@ summarize_neonatal_trials <- function(term = DEFAULT_TERM,
                           base_urls = base_urls,
                           date_fields = DEFAULT_DATE_FIELDS,
                           page_size = page_size,
-                          max_pages = max_pages,
-                          apply_filter = strict_filter)
+                          max_pages = max_pages)
 
   summary <- summarize_trials(records, start_year = start_year, end_year = end_year)
 
@@ -480,7 +448,6 @@ if (identical(environmentName(environment()), "R_GlobalEnv") && !interactive()) 
   output <- "data.frame"
   outfile <- ""
   base_urls <- API_BASE_URLS
-  strict_filter <- FALSE
 
   parse_arg <- function(flag) {
     idx <- which(args == flag)
@@ -497,9 +464,6 @@ if (identical(environmentName(environment()), "R_GlobalEnv") && !interactive()) 
   end_year <- as.integer(parse_arg("--end-year"))
   output <- parse_arg("--output") %||% output
   outfile <- parse_arg("--file") %||% outfile
-  if (!is.null(parse_arg("--strict-filter"))) {
-    strict_filter <- TRUE
-  }
 
   result <- summarize_neonatal_trials(
     term = term,
@@ -507,7 +471,6 @@ if (identical(environmentName(environment()), "R_GlobalEnv") && !interactive()) 
     start_year = start_year,
     end_year = end_year,
     base_urls = base_urls,
-    strict_filter = strict_filter,
     output = output,
     file = outfile
   )
