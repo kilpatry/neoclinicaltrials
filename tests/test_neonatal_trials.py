@@ -25,6 +25,7 @@ def test_extract_trial_record_prefers_requested_fields():
     client = nt.ClinicalTrialsClient()
     study = {
         "protocolSection": {
+            "identificationModule": {"nctId": "NCT00000001", "briefTitle": "Trial A"},
             "startDateStruct": {
                 "startDate": "2020-01-15",
                 "date": "2020-01-15",
@@ -45,6 +46,8 @@ def test_extract_trial_record_prefers_requested_fields():
 
     record = client._extract_trial_record(
         study,
+        nct_field=nt.DEFAULT_NCT_FIELD,
+        title_fields=nt.DEFAULT_TITLE_FIELDS,
         sponsor_field=nt.DEFAULT_SPONSOR_FIELD,
         status_field=nt.DEFAULT_STATUS_FIELD,
         condition_field=nt.DEFAULT_CONDITION_FIELD,
@@ -53,6 +56,8 @@ def test_extract_trial_record_prefers_requested_fields():
         date_fields=nt.DEFAULT_DATE_FIELDS,
     )
 
+    assert record.nct_id == "NCT00000001"
+    assert record.title == "Trial A"
     assert record.year == 2020
     assert record.sponsor_class == "Industry"
     assert record.status == "Recruiting"
@@ -100,6 +105,8 @@ def test_is_neonatal_study_matches_keywords_and_age_filters():
 def test_summarize_and_rows_shape():
     records = [
         nt.TrialRecord(
+            nct_id="NCT1",
+            title="Title 1",
             year=2020,
             sponsor_class="Industry",
             status="Recruiting",
@@ -108,6 +115,8 @@ def test_summarize_and_rows_shape():
             study_type="Interventional",
         ),
         nt.TrialRecord(
+            nct_id="NCT2",
+            title="Title 2",
             year=2020,
             sponsor_class="Other",
             status="Completed",
@@ -116,6 +125,8 @@ def test_summarize_and_rows_shape():
             study_type="Interventional",
         ),
         nt.TrialRecord(
+            nct_id="NCT3",
+            title="Title 1",
             year=2021,
             sponsor_class="Industry",
             status="Recruiting",
@@ -124,6 +135,8 @@ def test_summarize_and_rows_shape():
             study_type="Interventional",
         ),
         nt.TrialRecord(
+            nct_id="NCTX",
+            title="",
             year=None,
             sponsor_class="Unknown",
             status="Unknown",
@@ -141,6 +154,8 @@ def test_summarize_and_rows_shape():
     assert rows[0]["status"] == "Recruiting"
     assert rows[0]["intervention_type"] == "Drug"
     assert rows[0]["conditions"] == "Condition A"
+    assert rows[0]["nct_ids"] == "NCT1"
+    assert rows[0]["titles"] == "Title 1"
     assert rows[0]["count"] == 1
 
     assert rows[1]["year"] == 2020
@@ -152,3 +167,36 @@ def test_summarize_and_rows_shape():
     assert rows[2]["year"] == 2021
     assert rows[2]["sponsor_class"] == "Industry"
     assert rows[2]["count"] == 1
+
+
+def test_records_to_rows_returns_flat_trials():
+    records = [
+        nt.TrialRecord(
+            nct_id="NCT1",
+            title="Title 1",
+            year=2020,
+            sponsor_class="Industry",
+            status="Recruiting",
+            conditions=["Condition A"],
+            intervention_types=["Drug"],
+            study_type="Interventional",
+        ),
+        nt.TrialRecord(
+            nct_id="NCT2",
+            title="Title 2",
+            year=None,
+            sponsor_class="Other",
+            status="Completed",
+            conditions=[],
+            intervention_types=[],
+            study_type="Observational",
+        ),
+    ]
+
+    rows = nt.records_to_rows(records, start_year=2020, end_year=2020)
+    assert len(rows) == 1
+    assert rows[0]["nct_id"] == "NCT1"
+    assert rows[0]["title"] == "Title 1"
+    assert rows[0]["year"] == 2020
+    assert rows[0]["intervention_types"] == "Drug"
+    assert rows[0]["conditions"] == "Condition A"

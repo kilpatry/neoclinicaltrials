@@ -42,6 +42,7 @@ DEFAULT_STATUS_FIELD = "protocolSection.statusModule.overallStatus"
 DEFAULT_CONDITION_FIELD = "protocolSection.conditionsModule.conditions"
 DEFAULT_INTERVENTION_FIELD = "protocolSection.armsInterventionsModule.interventions"
 DEFAULT_STUDY_TYPE_FIELD = "protocolSection.designModule.studyType"
+DEFAULT_NCT_FIELD = "protocolSection.identificationModule.nctId"
 DEFAULT_TITLE_FIELDS = (
     "protocolSection.identificationModule.briefTitle",
     "protocolSection.identificationModule.officialTitle",
@@ -69,6 +70,8 @@ DEFAULT_PAGE_SIZE = 100
 
 @dataclass
 class TrialRecord:
+    nct_id: str
+    title: str
     year: Optional[int]
     sponsor_class: str
     status: str
@@ -102,9 +105,11 @@ class ClinicalTrialsClient:
         page_size: int = DEFAULT_PAGE_SIZE,
         max_pages: int = 30,
         title_fields: Iterable[str] = DEFAULT_TITLE_FIELDS,
+        nct_field: str = DEFAULT_NCT_FIELD,
         min_age_field: str = DEFAULT_MIN_AGE_FIELD,
         max_age_field: str = DEFAULT_MAX_AGE_FIELD,
         neonatal_keywords: Iterable[str] = DEFAULT_NEONATAL_KEYWORDS,
+        apply_filter: bool = False,
     ) -> List[TrialRecord]:
         """Fetch trials matching the term and return simplified records."""
 
@@ -122,6 +127,7 @@ class ClinicalTrialsClient:
                     condition_field,
                     intervention_field,
                     study_type_field,
+                    nct_field,
                     *title_fields,
                     min_age_field,
                     max_age_field,
@@ -155,19 +161,22 @@ class ClinicalTrialsClient:
 
             studies = payload.get("studies") or payload.get("results") or []
             for study in studies:
-                if not self._is_neonatal_study(
-                    study,
-                    condition_field=condition_field,
-                    title_fields=title_fields,
-                    min_age_field=min_age_field,
-                    max_age_field=max_age_field,
-                    keywords=neonatal_keywords,
-                ):
-                    continue
+                if apply_filter:
+                    if not self._is_neonatal_study(
+                        study,
+                        condition_field=condition_field,
+                        title_fields=title_fields,
+                        min_age_field=min_age_field,
+                        max_age_field=max_age_field,
+                        keywords=neonatal_keywords,
+                    ):
+                        continue
 
                 records.append(
                     self._extract_trial_record(
                         study,
+                        nct_field=nct_field,
+                        title_fields=title_fields,
                         sponsor_field=sponsor_field,
                         status_field=status_field,
                         condition_field=condition_field,
@@ -250,6 +259,8 @@ class ClinicalTrialsClient:
     def _extract_trial_record(
         self,
         study: Dict[str, Any],
+        nct_field: str,
+        title_fields: Iterable[str],
         sponsor_field: str,
         status_field: str,
         condition_field: str,
@@ -257,6 +268,19 @@ class ClinicalTrialsClient:
         study_type_field: str,
         date_fields: Iterable[str],
     ) -> TrialRecord:
+        nct_id = str(
+            self._get_nested_field(study, nct_field)
+            or self._get_nested_field(study, "protocolSection.identificationModule.nctId")
+            or self._get_nested_field(study, "protocolSection.identificationModule.nctIdNumber")
+            or "Unknown"
+        )
+
+        title_value = None
+        for field in title_fields:
+            title_value = self._get_nested_field(study, field)
+            if title_value:
+                break
+
         sponsor_class = (
             self._get_nested_field(study, sponsor_field)
             or self._get_nested_field(study, "sponsorInfo.leadSponsorClass")
@@ -301,6 +325,8 @@ class ClinicalTrialsClient:
                     break
 
         return TrialRecord(
+            nct_id=nct_id,
+            title=str(title_value or ""),
             year=year_value,
             sponsor_class=str(sponsor_class),
             status=str(status),
@@ -426,10 +452,12 @@ class ClinicalTrialsClient:
 
 def summarize_trials(
     records: Iterable[TrialRecord], start_year: Optional[int] = None, end_year: Optional[int] = None
-) -> Dict[tuple, int]:
+) -> Dict[tuple, Dict[str, Any]]:
     """Aggregate trials by year, sponsor, status, intervention type, and study type."""
 
-    summary: Dict[tuple, int] = defaultdict(int)
+    summary: Dict[tuple, Dict[str, Any]] = defaultdict(
+        lambda: {"count": 0, "nct_ids": set(), "titles": set()}
+    )
 
     for record in records:
         if record.year is None:
@@ -451,14 +479,60 @@ def summarize_trials(
                 intervention_type,
                 conditions_key,
             )
-            summary[key] += 1
+            summary[key]["count"] += 1
+            summary[key]["nct_ids"].add(record.nct_id)
+            if record.title:
+                summary[key]["titles"].add(record.title)
 
     return summary
 
 
-def summary_to_rows(summary: Dict[tuple, int]) -> List[Dict[str, Any]]:
+def records_to_rows(
+    records: Iterable[TrialRecord],
+    start_year: Optional[int] = None,
+    end_year: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Convert trial records to a flat list of per-study rows."""
+
     rows: List[Dict[str, Any]] = []
-    for key, count in summary.items():
+    for record in records:
+        if (start_year or end_year) and record.year is None:
+            continue
+        if record.year is not None:
+            if start_year and record.year < start_year:
+                continue
+            if end_year and record.year > end_year:
+                continue
+
+        rows.append(
+            {
+                "nct_id": record.nct_id,
+                "title": record.title,
+                "year": record.year,
+                "sponsor_class": record.sponsor_class,
+                "status": record.status,
+                "study_type": record.study_type,
+                "intervention_types": "; ".join(sorted(set(record.intervention_types)))
+                if record.intervention_types
+                else "",
+                "conditions": "; ".join(sorted(set(record.conditions))) if record.conditions else "",
+            }
+        )
+
+    rows.sort(
+        key=lambda r: (
+            r.get("year") if r.get("year") is not None else 0,
+            r.get("sponsor_class", ""),
+            r.get("status", ""),
+            r.get("nct_id", ""),
+        )
+    )
+    return rows
+
+
+def summary_to_rows(summary: Dict[tuple, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for key, payload in summary.items():
         year, sponsor, status, study_type, intervention_type, conditions = key
         rows.append(
             {
@@ -468,7 +542,9 @@ def summary_to_rows(summary: Dict[tuple, int]) -> List[Dict[str, Any]]:
                 "study_type": study_type,
                 "intervention_type": intervention_type,
                 "conditions": conditions,
-                "count": count,
+                "nct_ids": "; ".join(sorted(payload["nct_ids"])) if payload["nct_ids"] else "",
+                "titles": "; ".join(sorted(payload["titles"])) if payload["titles"] else "",
+                "count": payload["count"],
             }
         )
 
@@ -487,7 +563,6 @@ def summary_to_rows(summary: Dict[tuple, int]) -> List[Dict[str, Any]]:
 
 def write_csv(rows: List[Dict[str, Any]], output_file) -> None:
     if not rows:
-        output_file.write("year\n")
         return
 
     fieldnames = list(rows[0].keys())
@@ -520,8 +595,21 @@ def parse_args() -> argparse.Namespace:
         default="csv",
         help="Output format printed to stdout",
     )
+    parser.add_argument(
+        "--mode",
+        choices=["records", "summary"],
+        default="records",
+        help="Return individual trial rows (records) or aggregated counts (summary)",
+    )
     parser.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE, help="Page size for API pagination")
     parser.add_argument("--max-pages", type=int, default=30, help="Maximum number of pages to fetch")
+    parser.add_argument(
+        "--strict-filter",
+        action="store_true",
+        help=(
+            "Apply client-side neonatal filtering (keywords + age). Disabled by default to avoid dropping valid studies."
+        ),
+    )
     parser.add_argument(
         "--base-url",
         action="append",
@@ -540,10 +628,14 @@ def main() -> None:
         sponsor_field=args.sponsor_field,
         page_size=args.page_size,
         max_pages=args.max_pages,
+        apply_filter=args.strict_filter,
     )
 
-    summary = summarize_trials(records, start_year=args.start_year, end_year=args.end_year)
-    rows = summary_to_rows(summary)
+    if args.mode == "summary":
+        summary = summarize_trials(records, start_year=args.start_year, end_year=args.end_year)
+        rows = summary_to_rows(summary)
+    else:
+        rows = records_to_rows(records, start_year=args.start_year, end_year=args.end_year)
 
     if args.output == "json":
         write_json(rows, output_file=sys.stdout)
