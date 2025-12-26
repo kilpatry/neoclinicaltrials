@@ -113,11 +113,9 @@ class ClinicalTrialsClient:
     ) -> List[TrialRecord]:
         """Fetch trials matching the term and return simplified records."""
 
-        http = self.session
-        if http is None:
-            import requests
+        import requests
 
-            http = requests.Session()
+        http = self.session or requests.Session()
 
         field_list = [
             *date_fields,
@@ -132,21 +130,16 @@ class ClinicalTrialsClient:
             max_age_field,
         ]
 
-        params_v2: Dict[str, Any] = {
+        params: Dict[str, Any] = {
             "query.term": term,
-            "fields": ",".join(field_list),
-            "pageSize": page_size,
-            "format": "json",
-        }
-        params_legacy: Dict[str, Any] = {
-            "expr": term,
+            "query.expr": term,
             "fields": ",".join(field_list),
             "pageSize": page_size,
             "format": "json",
         }
 
         json_payload: Dict[str, Any] = {
-            "query": {"term": term},
+            "query": {"expr": term},
             "fields": field_list,
             "pageSize": page_size,
             "format": "json",
@@ -155,21 +148,18 @@ class ClinicalTrialsClient:
         records: List[TrialRecord] = []
         seen_ids: set[str] = set()
         page_token: Optional[str] = None
-        seen_tokens: set[str] = set()
 
         pages_fetched = 0
         while True:
-            paged_params_v2 = dict(params_v2)
-            paged_params_legacy = dict(params_legacy)
+            paged_params = dict(params)
             paged_json = dict(json_payload)
             paged_json["query"] = dict(json_payload.get("query", {}))
             if page_token:
-                paged_params_v2["pageToken"] = page_token
-                paged_params_legacy["pageToken"] = page_token
+                paged_params["pageToken"] = page_token
                 paged_json["pageToken"] = page_token
 
             response, base_used = self._request_with_fallback(
-                http, paged_params_v2, paged_params_legacy, paged_json
+                http, paged_params, paged_json
             )
             self._active_base = base_used
 
@@ -218,10 +208,6 @@ class ClinicalTrialsClient:
                 records.append(record)
 
             page_token = payload.get("nextPageToken") or payload.get("next_page_token")
-            if page_token:
-                if page_token in seen_tokens:
-                    break
-                seen_tokens.add(page_token)
             pages_fetched += 1
             if not page_token:
                 break
@@ -233,8 +219,7 @@ class ClinicalTrialsClient:
     def _request_with_fallback(
         self,
         http: "requests.Session",
-        params_v2: Dict[str, Any],
-        params_legacy: Dict[str, Any],
+        params: Dict[str, Any],
         json_payload: Dict[str, Any],
     ) -> tuple["requests.Response", str]:
         errors: List[str] = []
@@ -246,8 +231,11 @@ class ClinicalTrialsClient:
         for base in base_candidates:
             if base is None:
                 continue
-            methods: List[str] = ["GET"]
-            is_v2 = self._is_v2_base(base)
+            methods: List[str] = []
+            is_v2 = "/api/v2/" in base
+            if is_v2:
+                methods.append("POST")
+            methods.append("GET")
 
             for method in methods:
                 try:
@@ -256,13 +244,20 @@ class ClinicalTrialsClient:
                         "User-Agent": "neonatal-trials-py/1.0",
                     }
 
-                    params = params_v2 if is_v2 else params_legacy
-                    response = http.get(
-                        base,
-                        params=params,
-                        timeout=30,
-                        headers=headers,
-                    )
+                    if method == "POST":
+                        response = http.post(
+                            base,
+                            json=json_payload,
+                            timeout=30,
+                            headers=headers,
+                        )
+                    else:
+                        response = http.get(
+                            base,
+                            params=params,
+                            timeout=30,
+                            headers=headers,
+                        )
 
                     response.raise_for_status()
                     content_type = response.headers.get("Content-Type", "")
@@ -289,10 +284,6 @@ class ClinicalTrialsClient:
             f"Checked: {details}. If you are behind a corporate proxy or network filter, try a VPN "
             "or adjust the base URL with the --base-url flag."
         )
-
-    @staticmethod
-    def _is_v2_base(base: str) -> bool:
-        return "/api/v2/" in base or "/data-api/v2/" in base or base.rstrip("/").endswith("/v2/studies")
 
     def _extract_trial_record(
         self,
