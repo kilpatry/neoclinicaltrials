@@ -253,22 +253,16 @@ fetch_trials <- function(term = DEFAULT_TERM,
                   intervention_field, study_type_field, nct_field, title_fields,
                   min_age_field, max_age_field)
 
-  params_v2 <- list(
+  params <- list(
     "query.term" = term,
-    fields = paste(field_list, collapse = ","),
-    pageSize = page_size,
-    format = "json"
-  )
-
-  params_legacy <- list(
-    expr = term,
+    "query.expr" = term,
     fields = paste(field_list, collapse = ","),
     pageSize = page_size,
     format = "json"
   )
 
   payload <- list(
-    query = list(term = term),
+    query = list(expr = term),
     fields = field_list,
     pageSize = page_size,
     format = "json"
@@ -283,12 +277,10 @@ fetch_trials <- function(term = DEFAULT_TERM,
 
   page_counter <- 0
   repeat {
-    paged_params_v2 <- params_v2
-    paged_params_legacy <- params_legacy
+    paged_params <- params
     paged_payload <- payload
     if (!is.null(page_token)) {
-      paged_params_v2$pageToken <- page_token
-      paged_params_legacy$pageToken <- page_token
+      paged_params$pageToken <- page_token
       paged_payload$pageToken <- page_token
     }
 
@@ -296,8 +288,7 @@ fetch_trials <- function(term = DEFAULT_TERM,
     parsed <- NULL
 
     for (base in base_candidates) {
-      is_v2 <- grepl("/api/v2/", base)
-      methods <- if (is_v2) c("POST", "GET") else "GET"
+      methods <- if (grepl("/api/v2/", base)) c("POST", "GET") else "GET"
 
       for (method in methods) {
         attempt <- tryCatch({
@@ -317,7 +308,7 @@ fetch_trials <- function(term = DEFAULT_TERM,
           } else {
             httr::GET(
               base,
-              query = if (is_v2) paged_params_v2 else paged_params_legacy,
+              query = paged_params,
               headers
             )
           }

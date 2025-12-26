@@ -113,11 +113,9 @@ class ClinicalTrialsClient:
     ) -> List[TrialRecord]:
         """Fetch trials matching the term and return simplified records."""
 
-        http = self.session
-        if http is None:
-            import requests
+        import requests
 
-            http = requests.Session()
+        http = self.session or requests.Session()
 
         field_list = [
             *date_fields,
@@ -132,21 +130,16 @@ class ClinicalTrialsClient:
             max_age_field,
         ]
 
-        params_v2: Dict[str, Any] = {
+        params: Dict[str, Any] = {
             "query.term": term,
-            "fields": ",".join(field_list),
-            "pageSize": page_size,
-            "format": "json",
-        }
-        params_legacy: Dict[str, Any] = {
-            "expr": term,
+            "query.expr": term,
             "fields": ",".join(field_list),
             "pageSize": page_size,
             "format": "json",
         }
 
         json_payload: Dict[str, Any] = {
-            "query": {"term": term},
+            "query": {"expr": term},
             "fields": field_list,
             "pageSize": page_size,
             "format": "json",
@@ -158,17 +151,15 @@ class ClinicalTrialsClient:
 
         pages_fetched = 0
         while True:
-            paged_params_v2 = dict(params_v2)
-            paged_params_legacy = dict(params_legacy)
+            paged_params = dict(params)
             paged_json = dict(json_payload)
             paged_json["query"] = dict(json_payload.get("query", {}))
             if page_token:
-                paged_params_v2["pageToken"] = page_token
-                paged_params_legacy["pageToken"] = page_token
+                paged_params["pageToken"] = page_token
                 paged_json["pageToken"] = page_token
 
             response, base_used = self._request_with_fallback(
-                http, paged_params_v2, paged_params_legacy, paged_json
+                http, paged_params, paged_json
             )
             self._active_base = base_used
 
@@ -228,8 +219,7 @@ class ClinicalTrialsClient:
     def _request_with_fallback(
         self,
         http: "requests.Session",
-        params_v2: Dict[str, Any],
-        params_legacy: Dict[str, Any],
+        params: Dict[str, Any],
         json_payload: Dict[str, Any],
     ) -> tuple["requests.Response", str]:
         errors: List[str] = []
@@ -262,7 +252,6 @@ class ClinicalTrialsClient:
                             headers=headers,
                         )
                     else:
-                        params = params_v2 if is_v2 else params_legacy
                         response = http.get(
                             base,
                             params=params,
