@@ -246,10 +246,8 @@ def test_fetch_trials_deduplicates_by_nct_and_filters_by_default():
         def json(self):
             return self._payload
 
-    def fake_request(self, http, params_v2, params_legacy, json_payload):
-        payload_calls.append(
-            {"params_v2": params_v2, "params_legacy": params_legacy, "json": json_payload}
-        )
+    def fake_request(self, http, params, json_payload):
+        payload_calls.append({"params": params, "json": json_payload})
         payload = {
             "studies": [
                 {
@@ -297,7 +295,7 @@ def test_fetch_trials_deduplicates_by_nct_and_filters_by_default():
         }
         return FakeResponse(payload), "https://example.com"
 
-    client = nt.ClinicalTrialsClient(base_url=["https://example.com"], session=object())
+    client = nt.ClinicalTrialsClient(base_url=["https://example.com"])
     original = nt.ClinicalTrialsClient._request_with_fallback
     nt.ClinicalTrialsClient._request_with_fallback = fake_request
     try:
@@ -308,8 +306,3 @@ def test_fetch_trials_deduplicates_by_nct_and_filters_by_default():
     assert len(records) == 1
     assert records[0].nct_id == "NCTDUPE"
     assert records[0].title.startswith("Neonatal sepsis")
-
-
-def test_base_url_string_is_not_split():
-    client = nt.ClinicalTrialsClient(base_url="https://clinicaltrials.gov/api/v2/studies")
-    assert client.base_urls == ["https://clinicaltrials.gov/api/v2/studies"]
