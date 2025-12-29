@@ -253,16 +253,17 @@ fetch_trials <- function(term = DEFAULT_TERM,
                   intervention_field, study_type_field, nct_field, title_fields,
                   min_age_field, max_age_field)
 
-  params_v2 <- list(
+  params <- list(
     "query.term" = term,
+    "query.expr" = term,
     fields = paste(field_list, collapse = ","),
     pageSize = page_size,
     format = "json"
   )
 
-  params_legacy <- list(
-    expr = term,
-    fields = paste(field_list, collapse = ","),
+  payload <- list(
+    query = list(expr = term),
+    fields = field_list,
     pageSize = page_size,
     format = "json"
   )
@@ -270,40 +271,47 @@ fetch_trials <- function(term = DEFAULT_TERM,
   records <- list()
   seen_ids <- character()
   page_token <- NULL
-  seen_tokens <- character()
   base_candidates <- base_urls
   active_base <- NULL
   errors <- character()
 
   page_counter <- 0
   repeat {
-    paged_params_v2 <- params_v2
-    paged_params_legacy <- params_legacy
+    paged_params <- params
+    paged_payload <- payload
     if (!is.null(page_token)) {
-      paged_params_v2$pageToken <- page_token
-      paged_params_legacy$pageToken <- page_token
+      paged_params$pageToken <- page_token
+      paged_payload$pageToken <- page_token
     }
 
     resp <- NULL
     parsed <- NULL
 
     for (base in base_candidates) {
+      methods <- if (grepl("/api/v2/", base)) c("POST", "GET") else "GET"
 
-      attempt <- tryCatch({
-        headers <- list(
-          httr::timeout(30),
-          httr::accept_json(),
-          httr::user_agent("neonatal-trials-r/1.0")
-        )
+      for (method in methods) {
+        attempt <- tryCatch({
+          headers <- list(
+            httr::timeout(30),
+            httr::accept_json(),
+            httr::user_agent("neonatal-trials-r/1.0")
+          )
 
-        is_v2 <- grepl("/api/v2/", base) || grepl("/data-api/v2/", base) || grepl("/v2/studies$", base)
-        query_params <- if (is_v2) paged_params_v2 else paged_params_legacy
-
-        candidate_resp <- httr::GET(
-          base,
-          query = query_params,
-          headers
-        )
+          candidate_resp <- if (identical(method, "POST")) {
+            httr::POST(
+              base,
+              body = paged_payload,
+              encode = "json",
+              headers
+            )
+          } else {
+            httr::GET(
+              base,
+              query = paged_params,
+              headers
+            )
+          }
 
           if (httr::status_code(candidate_resp) >= 400) {
             preview <- substr(httr::content(candidate_resp, as = "text", encoding = "UTF-8"), 1, 200)
@@ -340,16 +348,19 @@ fetch_trials <- function(term = DEFAULT_TERM,
 
           list(resp = candidate_resp, parsed = candidate_parsed)
         }, error = function(e) {
-          errors <<- c(errors, sprintf("%s (GET): %s", base, conditionMessage(e)))
+          errors <<- c(errors, sprintf("%s (%s): %s", base, method, conditionMessage(e)))
           NULL
         })
 
-      if (!is.null(attempt)) {
-        resp <- attempt$resp
-        parsed <- attempt$parsed
-        active_base <- base
-        break
+        if (!is.null(attempt)) {
+          resp <- attempt$resp
+          parsed <- attempt$parsed
+          active_base <- base
+          break
+        }
       }
+
+      if (!is.null(resp)) break
     }
 
     if (is.null(resp) || is.null(parsed)) {
@@ -404,8 +415,6 @@ fetch_trials <- function(term = DEFAULT_TERM,
 
     page_token <- parsed$nextPageToken %||% parsed$next_page_token
     if (is.null(page_token)) break
-    if (page_token %in% seen_tokens) break
-    seen_tokens <- c(seen_tokens, page_token)
     page_counter <- page_counter + 1
     if (!is.null(max_pages) && page_counter >= max_pages) break
   }
